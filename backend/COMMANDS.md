@@ -1,5 +1,19 @@
 # Sports Analytics Platform — Command Cheat Sheet
 
+## Manual Update
+```
+cd C:\Users\reedl\OneDrive\Documents\sports-analytics-platform\backend
+.\venv\Scripts\activate
+python -c "from app.services.nba_fetcher import nightly_update; nightly_update()"
+python -m app.services.odds_fetcher
+```
+---
+
+
+
+
+
+
 ## RESET DATABASE (wipe all data — do this before re-running fetcher)
 Run in TablePlus SQL editor (Ctrl+Enter to execute):
 ```

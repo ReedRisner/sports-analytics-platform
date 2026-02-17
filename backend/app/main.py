@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone=pytz.utc)
 
 def run_odds_fetch():
-    """Called by the scheduler. Runs the odds fetch in its own DB session."""
+    """Runs the odds fetch in its own DB session."""
     logger.info("Scheduled odds fetch starting...")
     try:
         from app.services.odds_fetcher import fetch_todays_odds
@@ -28,8 +28,27 @@ def run_odds_fetch():
     except Exception as e:
         logger.exception(f"Scheduled odds fetch failed: {e}")
 
-# Midnight PST = 08:00 UTC
-# Noon PST     = 20:00 UTC
+def run_nightly_update():
+    """Runs the incremental NBA stats update in its own DB session."""
+    logger.info("Nightly NBA stats update starting...")
+    try:
+        from app.services.nba_fetcher import nightly_update
+        nightly_update()
+    except Exception as e:
+        logger.exception(f"Nightly NBA stats update failed: {e}")
+
+# ── Times (all UTC) ───────────────────────────────────────────────────────────
+# 03:00 PST = 11:00 UTC  — nightly stats update (after all West Coast games finish)
+# 08:00 UTC = midnight PST — odds fetch
+# 20:00 UTC = noon PST    — odds fetch
+
+scheduler.add_job(
+    run_nightly_update,
+    CronTrigger(hour=11, minute=0, timezone="UTC"),
+    id="nba_nightly_update",
+    name="NBA stats nightly update — 3am PST",
+    replace_existing=True,
+)
 scheduler.add_job(
     run_odds_fetch,
     CronTrigger(hour=8, minute=0, timezone="UTC"),
@@ -62,8 +81,8 @@ async def lifespan(app: FastAPI):
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Sports Analytics API",
-    version="2.1.0",
-    description="NBA Props Analytics Engine — Phase 2 with Live Odds",
+    version="2.2.0",
+    description="NBA Props Analytics Engine — Phase 2 with Auto Stats Update",
     lifespan=lifespan,
 )
 
@@ -85,7 +104,7 @@ app.include_router(odds.router)
 def health_check():
     return {
         "status":  "online",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "scheduler": {
             "running": scheduler.running,
             "jobs":    [j.name for j in scheduler.get_jobs()],

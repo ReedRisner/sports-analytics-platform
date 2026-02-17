@@ -696,7 +696,233 @@ def fetch_schedule(season="2025-26"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN
+# NIGHTLY UPDATE — incremental refresh (run at 3am PST after games finish)
+# ─────────────────────────────────────────────────────────────────────────────
+def nightly_update(season="2025-26"):
+    """
+    Lightweight nightly refresh — only pulls NEW data since the last update.
+    Safe to run every night without wiping anything.
+
+    Steps:
+      1. Pull new game scores (skips games already in DB by nba_game_id)
+      2. Pull new player stat lines (skips existing player_game_stats)
+      3. Update standings (W/L records)
+      4. Update team stats (pace, ratings, PPG)
+      5. Update defensive stats by position + ranks
+
+    Does NOT re-fetch: rosters, full schedule, or historical data.
+    Run time: ~2-3 minutes.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    log.info("Nightly NBA update starting...")
+    print("=" * 50)
+    print(f"  Nightly NBA Update — {season}")
+    print("=" * 50)
+
+    db = SessionLocal()
+    try:
+        # ── Step 1: New game scores ───────────────────────────────────────────
+        print("\n[1/5] Fetching new game scores...")
+        score_data = nba_get(TEAMGAMELOGS_URL, {
+            "Season": season, "SeasonType": "Regular Season", "LeagueID": "00"
+        })
+        score_cols, score_rows = parse_rs(score_data, 0)
+        df_scores = pd.DataFrame(score_rows, columns=score_cols)
+        df_scores['PTS'] = pd.to_numeric(df_scores['PTS'], errors='coerce').fillna(0).astype(int)
+        df_scores['TEAM_ID'] = df_scores['TEAM_ID'].astype(int)
+
+        home_sc = df_scores[df_scores['MATCHUP'].str.contains('vs\\.', na=False)][
+            ['GAME_ID','GAME_DATE','TEAM_ID','PTS']
+        ].rename(columns={'TEAM_ID':'HOME_TEAM_ID','PTS':'HOME_PTS'})
+        away_sc = df_scores[df_scores['MATCHUP'].str.contains(' @ ', na=False)][
+            ['GAME_ID','TEAM_ID','PTS']
+        ].rename(columns={'TEAM_ID':'AWAY_TEAM_ID','PTS':'AWAY_PTS'})
+        games_df = pd.merge(
+            home_sc[['GAME_ID','GAME_DATE','HOME_TEAM_ID','HOME_PTS']],
+            away_sc[['GAME_ID','AWAY_TEAM_ID','AWAY_PTS']],
+            on='GAME_ID'
+        )
+
+        # Only process games not already in DB
+        existing_game_ids = {g.nba_game_id for g in db.query(Game.nba_game_id).all()}
+        game_cache = {}
+        new_games = 0
+
+        for _, grow in games_df.iterrows():
+            nba_game_id = str(grow['GAME_ID'])
+
+            if nba_game_id in existing_game_ids:
+                # Game exists — update scores if it was previously scheduled
+                existing = db.query(Game).filter(Game.nba_game_id == nba_game_id).first()
+                if existing and existing.home_score is None:
+                    existing.home_score = int(grow['HOME_PTS'])
+                    existing.away_score = int(grow['AWAY_PTS'])
+                    existing.status    = 'final'
+                    game_cache[nba_game_id] = existing.id
+                else:
+                    game_cache[nba_game_id] = existing.id if existing else None
+                continue
+
+            # New game — insert it
+            game = Game(
+                nba_game_id  = nba_game_id,
+                date         = str(grow['GAME_DATE'])[:10],
+                home_team_id = int(grow['HOME_TEAM_ID']),
+                away_team_id = int(grow['AWAY_TEAM_ID']),
+                home_score   = int(grow['HOME_PTS']),
+                away_score   = int(grow['AWAY_PTS']),
+                status       = 'final'
+            )
+            db.add(game)
+            db.flush()
+            game_cache[nba_game_id] = game.id
+            new_games += 1
+
+        db.commit()
+        print(f"  ✓ {new_games} new games added, scores updated for previously scheduled games")
+        time.sleep(1)
+
+        # ── Step 2: New player stat lines ─────────────────────────────────────
+        print("\n[2/5] Fetching new player stat lines...")
+
+        # Build set of (player_id, game_id) already in DB to skip
+        existing_stats = {
+            (s.player_id, s.game_id)
+            for s in db.query(PlayerGameStats.player_id, PlayerGameStats.game_id).all()
+        }
+
+        base_data = nba_get(GAMELOGS_URL, {
+            "Season": season, "SeasonType": "Regular Season",
+            "LeagueID": "00", "MeasureType": "Base",
+        })
+        base_cols, base_rows = parse_rs(base_data, 0)
+        df_base = pd.DataFrame(base_rows, columns=base_cols)
+        time.sleep(1)
+
+        # Advanced logs for usage rate
+        try:
+            adv_data = nba_get(GAMELOGS_URL, {
+                "Season": season, "SeasonType": "Regular Season",
+                "LeagueID": "00", "MeasureType": "Advanced",
+            })
+            adv_cols, adv_rows = parse_rs(adv_data, 0)
+            df_adv = pd.DataFrame(adv_rows, columns=adv_cols)
+            usg_col = 'USG_PCT' if 'USG_PCT' in df_adv.columns else None
+            if usg_col:
+                df_adv['_key'] = df_adv['PLAYER_ID'].astype(str) + '_' + df_adv['GAME_ID'].astype(str)
+                usg_lookup = dict(zip(df_adv['_key'], df_adv[usg_col]))
+            else:
+                usg_lookup = {}
+        except Exception:
+            usg_lookup = {}
+        time.sleep(1)
+
+        team_cache = {}
+        saved = 0
+
+        for _, row in df_base.iterrows():
+            nba_player_id = safe_int(row.get('PLAYER_ID'))
+            nba_game_id   = str(row.get('GAME_ID', ''))
+            player_name   = row.get('PLAYER_NAME', '')
+
+            if not player_name or nba_game_id not in game_cache:
+                continue
+
+            db_game_id = game_cache[nba_game_id]
+            if not db_game_id:
+                continue
+
+            # Skip if stat line already exists
+            if (nba_player_id, db_game_id) in existing_stats:
+                continue
+
+            nba_team_id = safe_int(row.get('TEAM_ID'))
+            if nba_team_id not in team_cache:
+                team_cache[nba_team_id] = db.query(Team).filter(Team.id == nba_team_id).first()
+            team = team_cache[nba_team_id]
+
+            player = db.query(Player).filter(Player.id == nba_player_id).first()
+            if not player:
+                player = Player(id=nba_player_id, name=player_name, is_active=True)
+                db.add(player)
+                db.flush()
+            if team and player.team_id != team.id:
+                player.team_id = team.id
+
+            points    = safe_int(row.get('PTS'))
+            rebounds  = safe_int(row.get('REB'))
+            assists   = safe_int(row.get('AST'))
+            usg_key   = f"{nba_player_id}_{nba_game_id}"
+            usage_rate = safe_float(usg_lookup.get(usg_key)) if usg_lookup.get(usg_key) is not None else None
+
+            db.add(PlayerGameStats(
+                player_id   = player.id,
+                game_id     = db_game_id,
+                minutes     = safe_float(row.get('MIN')),
+                points      = points,
+                rebounds    = rebounds,
+                assists     = assists,
+                oreb        = safe_int(row.get('OREB')),
+                dreb        = safe_int(row.get('DREB')),
+                fgm         = safe_int(row.get('FGM')),
+                fga         = safe_int(row.get('FGA')),
+                fg_pct      = safe_float(row.get('FG_PCT')),
+                fg3m        = safe_int(row.get('FG3M')),
+                fg3a        = safe_int(row.get('FG3A')),
+                fg3_pct     = safe_float(row.get('FG3_PCT')),
+                ftm         = safe_int(row.get('FTM')),
+                fta         = safe_int(row.get('FTA')),
+                ft_pct      = safe_float(row.get('FT_PCT')),
+                steals      = safe_int(row.get('STL')),
+                blocks      = safe_int(row.get('BLK')),
+                turnovers   = safe_int(row.get('TOV')),
+                plus_minus  = safe_int(row.get('PLUS_MINUS')),
+                usage_rate  = usage_rate,
+                pra         = points + rebounds + assists,
+                pr          = points + rebounds,
+                pa          = points + assists,
+                ra          = rebounds + assists,
+                fantasy_points = safe_float(row.get('NBA_FANTASY_PTS')),
+            ))
+            saved += 1
+
+            if saved % 500 == 0:
+                db.commit()
+                print(f"  Saved {saved} new stat lines...")
+
+        db.commit()
+        print(f"  ✓ {saved} new player stat lines added")
+        time.sleep(1)
+
+        # ── Step 3: Standings ─────────────────────────────────────────────────
+        print("\n[3/5] Updating standings...")
+        fetch_standings(season=season)
+
+        # ── Step 4: Team stats ────────────────────────────────────────────────
+        print("\n[4/5] Updating team stats...")
+        fetch_team_stats(season=season)
+
+        # ── Step 5: Defensive stats by position ───────────────────────────────
+        print("\n[5/5] Updating defensive stats by position...")
+        fetch_defensive_stats_by_position(season=season)
+
+        print("\n" + "=" * 50)
+        print(f"  ✓ Nightly update complete")
+        print(f"    New games: {new_games}")
+        print(f"    New stat lines: {saved}")
+        print("=" * 50)
+        log.info(f"Nightly NBA update complete — {new_games} games, {saved} stat lines")
+
+    except Exception as e:
+        db.rollback()
+        print(f"  ✗ Nightly update failed: {e}")
+        import traceback; traceback.print_exc()
+        log.exception(f"Nightly NBA update failed: {e}")
+    finally:
+        db.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
