@@ -5,28 +5,20 @@ from nba_api.stats.static import teams as nba_teams_static, players as nba_playe
 from app.database import SessionLocal
 from app.models.player import Team, Player, PlayerGameStats, Game
 
-# ── Session with full browser headers ───────────────────────────────────────
+# ── Exact headers that returned 200 in your test ─────────────────────────────
 SESSION = requests.Session()
 SESSION.headers.update({
-    'Host': 'stats.nba.com',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json',
     'x-nba-stats-origin': 'stats',
     'x-nba-stats-token': 'true',
-    'Connection': 'keep-alive',
     'Referer': 'https://www.nba.com/',
-    'Origin': 'https://www.nba.com',
 })
 
-# ── Confirmed working URL from endpoint docs ─────────────────────────────────
-# Uses playergamelogs (plural) — returns ALL players in one request
-# Season format: "2024-25" or "2025-26"
 GAMELOGS_URL = "https://stats.nba.com/stats/playergamelogs"
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def safe_float(val, default=0.0):
     try:
         return float(val) if val is not None else default
@@ -38,22 +30,6 @@ def safe_int(val, default=0):
         return int(val) if val is not None else default
     except (ValueError, TypeError):
         return default
-
-def fetch_with_retry(url, params, retries=5, wait=20):
-    """Fetch URL with params, retry on timeout."""
-    for attempt in range(1, retries + 1):
-        try:
-            print(f"  Attempt {attempt}/{retries}...")
-            resp = SESSION.get(url, params=params, timeout=90)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.Timeout:
-            print(f"  Timed out. Waiting {wait}s...")
-            time.sleep(wait)
-        except requests.exceptions.RequestException as e:
-            print(f"  Error: {e}. Waiting {wait}s...")
-            time.sleep(wait)
-    raise Exception(f"Failed after {retries} attempts.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,13 +79,9 @@ def seed_players():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3 — Fetch all game logs for a season
+# STEP 3 — Fetch all game logs
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_player_gamelogs(season="2025-26"):
-    """
-    Pulls all player game logs for the given season.
-    Uses 2025-26 by default since it's the current season.
-    """
     db = SessionLocal()
     try:
         params = {
@@ -118,31 +90,21 @@ def fetch_player_gamelogs(season="2025-26"):
             "LeagueID": "00",
         }
 
-        print(f"  Fetching {season} game logs from NBA API...")
-        print(f"  URL: {GAMELOGS_URL}")
-        print(f"  Params: {params}")
+        print(f"  Contacting NBA API for {season}...")
+        resp = SESSION.get(GAMELOGS_URL, params=params, timeout=60)
+        resp.raise_for_status()
 
-        data = fetch_with_retry(GAMELOGS_URL, params=params, retries=5, wait=20)
-
-        # ── Parse response structure ─────────────────────────────────────────
-        # Based on confirmed endpoint: data['resultSets'][0]
-        result_sets = data.get('resultSets', [])
-        if not result_sets:
-            print("  ✗ No resultSets in response. Full response keys:", list(data.keys()))
-            return
-
-        result_set = result_sets[0]
+        data       = resp.json()
+        result_set = data['resultSets'][0]
         col_names  = result_set['headers']
         rows       = result_set['rowSet']
 
         print(f"  ✓ Got {len(rows)} rows")
-        print(f"  Columns available: {col_names[:10]}...")  # show first 10 cols
 
         if len(rows) == 0:
-            print("  ⚠ Zero rows — try season='2025-26' if using 2025-26")
+            print("  ⚠ No rows returned for this season.")
             return
 
-        # Helper to get value by column name
         def val(row, col, default=0):
             try:
                 idx = col_names.index(col)
@@ -165,14 +127,14 @@ def fetch_player_gamelogs(season="2025-26"):
             if not player_name:
                 continue
 
-            # ── Resolve team ─────────────────────────────────────────────────
+            # ── Team ─────────────────────────────────────────────────────────
             if nba_team_id not in team_cache:
                 team_cache[nba_team_id] = db.query(Team).filter(
                     Team.id == nba_team_id
                 ).first()
             team = team_cache[nba_team_id]
 
-            # ── Resolve player ───────────────────────────────────────────────
+            # ── Player ───────────────────────────────────────────────────────
             player = db.query(Player).filter(Player.id == nba_player_id).first()
             if not player:
                 player = Player(id=nba_player_id, name=player_name, is_active=True)
@@ -181,8 +143,7 @@ def fetch_player_gamelogs(season="2025-26"):
             if team and player.team_id != team.id:
                 player.team_id = team.id
 
-            # ── Resolve game ─────────────────────────────────────────────────
-            # GAME_DATE from this endpoint: "2017-04-12T00:00:00" format
+            # ── Game ─────────────────────────────────────────────────────────
             game_date_clean = game_date_str[:10] if game_date_str else None
             game_key = f"{game_date_clean}_{matchup}"
 
@@ -199,15 +160,13 @@ def fetch_player_gamelogs(season="2025-26"):
                 game_cache[game_key] = game
             game = game_cache[game_key]
 
-            # ── Parse stats ──────────────────────────────────────────────────
+            # ── Stats ─────────────────────────────────────────────────────────
             points   = safe_int(val(row, 'PTS'))
             rebounds = safe_int(val(row, 'REB'))
             assists  = safe_int(val(row, 'AST'))
             fg3m     = safe_int(val(row, 'FG3M'))
             fg3a     = safe_int(val(row, 'FG3A'))
-
-            # MIN is a float in this endpoint (e.g. 20.88) — no colon parsing needed
-            minutes = safe_float(val(row, 'MIN'))
+            minutes  = safe_float(val(row, 'MIN'))
 
             db.add(PlayerGameStats(
                 player_id         = player.id,
@@ -229,12 +188,12 @@ def fetch_player_gamelogs(season="2025-26"):
             ))
             saved += 1
 
-            if saved % 200 == 0:
+            if saved % 500 == 0:
                 db.commit()
                 print(f"  Saved {saved} / {len(rows)} rows...")
 
         db.commit()
-        print(f"  ✓ Done — saved {saved} stat lines")
+        print(f"  ✓ Done — saved {saved} stat lines to database")
 
     except Exception as e:
         db.rollback()
@@ -258,13 +217,11 @@ if __name__ == "__main__":
     print("\n[2/3] Seeding players...")
     seed_players()
 
-    print("\n[3/3] Fetching game logs...")
-    # 2024-25 is the safe default — confirmed season with data
-    # Change to "2025-26" once that season is underway
+    print("\n[3/3] Fetching 2024-25 game logs...")
     fetch_player_gamelogs(season="2025-26")
 
     print("\n" + "=" * 50)
-    print("  Done! In TablePlus press Ctrl+R to refresh.")
+    print("  Done! Press Ctrl+R in TablePlus to refresh.")
     print("  teams             → 30 rows")
     print("  players           → rows with team_id filled")
     print("  games             → one row per game")
