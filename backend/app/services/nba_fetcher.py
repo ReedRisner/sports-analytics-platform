@@ -16,11 +16,47 @@ SESSION.headers.update({
     'Referer': 'https://www.nba.com/',
 })
 
-GAMELOGS_URL     = "https://stats.nba.com/stats/playergamelogs"
-TEAMGAMELOGS_URL = "https://stats.nba.com/stats/teamgamelogs"
-ROSTER_URL       = "https://stats.nba.com/stats/commonteamroster"
-STANDINGS_URL    = "https://stats.nba.com/stats/leaguestandingsv3"
-FALLBACK         = "2024-25"
+GAMELOGS_URL          = "https://stats.nba.com/stats/playergamelogs"
+GAMELOGS_ADVANCED_URL = "https://stats.nba.com/stats/playergamelogs"   # same endpoint, measure type param
+TEAMGAMELOGS_URL      = "https://stats.nba.com/stats/teamgamelogs"
+ROSTER_URL            = "https://stats.nba.com/stats/commonteamroster"
+STANDINGS_URL         = "https://stats.nba.com/stats/leaguestandingsv3"
+FALLBACK              = "2024-25"
+
+# ── Position bucketing ────────────────────────────────────────────────────────
+# NBA API raw values → our 5 canonical groups
+#   G   = pure guard
+#   G-F = guard/forward combo
+#   F   = pure forward (also F-G maps here)
+#   F-C = forward/center combo (also C-F maps here)
+#   C   = pure center
+POS_BUCKET = {
+    'G':   'G',
+    'G-F': 'GF',
+    'F-G': 'GF',    # treat same as G-F
+    'F':   'F',
+    'F-C': 'FC',
+    'C-F': 'FC',    # treat same as F-C
+    'C':   'C',
+}
+
+# Maps bucket → Team column prefix
+BUCKET_COL = {
+    'G':  'g',
+    'GF': 'gf',
+    'F':  'f',
+    'FC': 'fc',
+    'C':  'c',
+}
+
+STAT_COLS = ['pts', 'ast', 'reb', 'stl', 'blk']
+STAT_DF_COLS = {
+    'pts': 'PTS',
+    'ast': 'AST',
+    'reb': 'REB',
+    'stl': 'STL',
+    'blk': 'BLK',
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -235,13 +271,18 @@ def seed_players_with_details(season="2025-26"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 5 — Points allowed by position
-# Runs AFTER step 4 so player positions exist in DB
+# STEP 5 — Defensive stats allowed by position group (PTS, AST, REB, STL, BLK)
+#           + league ranks (1 = most permissive = easiest matchup)
 # ─────────────────────────────────────────────────────────────────────────────
-def fetch_pts_allowed_by_position(season="2025-26"):
+def fetch_defensive_stats_by_position(season="2025-26"):
+    """
+    For each team, compute the average PTS/AST/REB/STL/BLK allowed to opposing
+    players grouped by position bucket (G, GF, F, FC, C), then rank all 30
+    teams per stat+position combo (rank 1 = most allowed = best matchup).
+    """
     db = SessionLocal()
     try:
-        print(f"  Fetching player gamelogs for position grouping...")
+        print(f"  Fetching player gamelogs for defensive position breakdown...")
         data = nba_get(GAMELOGS_URL, {
             "Season": season, "SeasonType": "Regular Season", "LeagueID": "00"
         })
@@ -249,53 +290,104 @@ def fetch_pts_allowed_by_position(season="2025-26"):
         df = pd.DataFrame(rows, columns=col_names)
         print(f"  ✓ {len(df)} player-game rows")
 
+        # Build lookups
         players_q  = db.query(Player.id, Player.position).filter(Player.position != None).all()
         pos_lookup = {p.id: p.position for p in players_q}
         abbrev_map = {t.abbreviation: t.id for t in db.query(Team).all() if t.abbreviation}
 
-        df['POSITION']    = df['PLAYER_ID'].astype(int).map(pos_lookup)
-        df                = df[df['POSITION'].notna()].copy()
+        # Map raw position → bucket
+        df['RAW_POS'] = df['PLAYER_ID'].astype(int).map(pos_lookup)
+        df = df[df['RAW_POS'].notna()].copy()
+        df['POS_BUCKET'] = df['RAW_POS'].map(POS_BUCKET)
+        df = df[df['POS_BUCKET'].notna()].copy()
 
+        # Determine opponent team from MATCHUP string (e.g. "LAL vs. GSW" or "LAL @ GSW")
         def get_opp_id(matchup):
             parts    = str(matchup).replace('vs.', '@').split('@')
             opp_abbr = parts[1].strip() if len(parts) > 1 else ''
             return abbrev_map.get(opp_abbr)
 
         df['OPP_TEAM_ID'] = df['MATCHUP'].apply(get_opp_id)
-        df                = df[df['OPP_TEAM_ID'].notna()].copy()
-        df['PTS']         = pd.to_numeric(df['PTS'], errors='coerce').fillna(0)
+        df = df[df['OPP_TEAM_ID'].notna()].copy()
 
-        grouped = df.groupby(['OPP_TEAM_ID', 'POSITION'])['PTS'].mean().reset_index()
-        grouped.columns = ['OPP_TEAM_ID', 'POSITION', 'AVG_PTS']
+        for col in ['PTS', 'AST', 'REB', 'STL', 'BLK']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        pos_col_map = {
-            'G':   'pts_allowed_pg',
-            'F':   'pts_allowed_sf',
-            'C':   'pts_allowed_c',
-            'G-F': 'pts_allowed_sg',
-            'F-G': 'pts_allowed_sg',
-            'F-C': 'pts_allowed_pf',
-            'C-F': 'pts_allowed_pf',
-        }
+        # ── Compute per-team, per-bucket averages ───────────────────────────
+        grouped = df.groupby(['OPP_TEAM_ID', 'POS_BUCKET'])[['PTS', 'AST', 'REB', 'STL', 'BLK']].mean().reset_index()
 
-        updated = 0
+        # Build a dict: team_id → {bucket → {stat → avg}}
+        team_avgs = {}
         for _, row in grouped.iterrows():
-            opp_tid  = row['OPP_TEAM_ID']
-            position = str(row['POSITION']).strip()
-            avg_pts  = safe_float(row['AVG_PTS'])
-            col_name = pos_col_map.get(position)
-            if not col_name:
+            tid    = row['OPP_TEAM_ID']
+            bucket = row['POS_BUCKET']
+            if tid not in team_avgs:
+                team_avgs[tid] = {}
+            team_avgs[tid][bucket] = {
+                'pts': safe_float(row['PTS']),
+                'ast': safe_float(row['AST']),
+                'reb': safe_float(row['REB']),
+                'stl': safe_float(row['STL']),
+                'blk': safe_float(row['BLK']),
+            }
+
+        # Write averages to DB
+        updated = 0
+        for tid, buckets in team_avgs.items():
+            team = db.query(Team).filter(Team.id == tid).first()
+            if not team:
                 continue
-            team = db.query(Team).filter(Team.id == opp_tid).first()
-            if team:
-                setattr(team, col_name, avg_pts)
-                updated += 1
+            for bucket, stats in buckets.items():
+                col_suffix = BUCKET_COL.get(bucket)
+                if not col_suffix:
+                    continue
+                for stat in STAT_COLS:
+                    col_name = f"{stat}_allowed_{col_suffix}"
+                    if hasattr(team, col_name):
+                        setattr(team, col_name, stats[stat])
+                        updated += 1
+        db.commit()
+        print(f"  ✓ Defensive averages saved ({updated} values across {len(team_avgs)} teams)")
+
+        # ── Compute ranks ────────────────────────────────────────────────────
+        # For each stat+bucket combo, rank 30 teams descending (most allowed = rank 1)
+        print("  Computing league ranks...")
+        all_teams = db.query(Team).all()
+
+        for stat in STAT_COLS:
+            for bucket, col_suffix in BUCKET_COL.items():
+                avg_col  = f"{stat}_allowed_{col_suffix}"
+                rank_col = f"{stat}_rank_{col_suffix}"
+
+                # Collect (team, value) pairs, skip nulls
+                vals = []
+                for team in all_teams:
+                    v = getattr(team, avg_col, None)
+                    if v is not None:
+                        vals.append((team, v))
+
+                if not vals:
+                    continue
+
+                # Sort descending, assign rank 1 to highest (most permissive)
+                vals.sort(key=lambda x: x[1], reverse=True)
+                for rank_num, (team, _) in enumerate(vals, start=1):
+                    if hasattr(team, rank_col):
+                        setattr(team, rank_col, rank_num)
 
         db.commit()
-        print(f"  ✓ Points allowed by position saved ({updated} entries)")
-        sample = db.query(Team).filter(Team.pts_allowed_pg != None).first()
-        if sample:
-            print(f"  Sample: {sample.name} → G:{sample.pts_allowed_pg:.1f}  F:{sample.pts_allowed_sf:.1f}  C:{sample.pts_allowed_c:.1f}")
+        print("  ✓ Ranks saved")
+
+        # ── Verification sample ──────────────────────────────────────────────
+        print("\n  VERIFICATION — PTS allowed to G (sorted by most permissive):")
+        sample_teams = db.query(Team).filter(Team.pts_allowed_g != None).all()
+        sample_sorted = sorted(sample_teams, key=lambda t: t.pts_allowed_g, reverse=True)
+        for t in sample_sorted[:5]:
+            print(f"    #{t.pts_rank_g:>2}  {t.name:<30} {t.pts_allowed_g:.2f} pts/game to Gs")
+        print("    ...")
+        for t in sample_sorted[-3:]:
+            print(f"    #{t.pts_rank_g:>2}  {t.name:<30} {t.pts_allowed_g:.2f} pts/game to Gs")
+
         time.sleep(1)
 
     except Exception as e:
@@ -307,12 +399,12 @@ def fetch_pts_allowed_by_position(season="2025-26"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 6 — Real game scores + player stat lines
+# STEP 6 — Real game scores + player stat lines (with usage_rate)
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_player_gamelogs(season="2025-26"):
     db = SessionLocal()
     try:
-        # Real scores from teamgamelogs
+        # ── Real scores from teamgamelogs ────────────────────────────────────
         print(f"  Fetching real team scores (teamgamelogs)...")
         score_data       = nba_get(TEAMGAMELOGS_URL, {"Season": season, "SeasonType": "Regular Season", "LeagueID": "00"})
         score_cols, score_rows = parse_rs(score_data, 0)
@@ -357,17 +449,49 @@ def fetch_player_gamelogs(season="2025-26"):
         print(f"  ✓ Saved {len(game_cache)} games with real scores")
         time.sleep(1)
 
-        # Player stat lines
-        print(f"  Fetching player game logs...")
-        data = nba_get(GAMELOGS_URL, {"Season": season, "SeasonType": "Regular Season", "LeagueID": "00"})
-        col_names, rows = parse_rs(data, 0)
-        df_all = pd.DataFrame(rows, columns=col_names)
-        print(f"  ✓ {len(df_all)} player-game rows")
+        # ── Base player game logs ────────────────────────────────────────────
+        print(f"  Fetching base player game logs...")
+        base_data = nba_get(GAMELOGS_URL, {
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "LeagueID": "00",
+            "MeasureType": "Base",
+        })
+        base_cols, base_rows = parse_rs(base_data, 0)
+        df_base = pd.DataFrame(base_rows, columns=base_cols)
+        print(f"  ✓ {len(df_base)} base stat rows")
+        time.sleep(1)
 
+        # ── Advanced player game logs (for USG_PCT) ───────────────────────────
+        print(f"  Fetching advanced player game logs (usage rate)...")
+        try:
+            adv_data = nba_get(GAMELOGS_URL, {
+                "Season": season,
+                "SeasonType": "Regular Season",
+                "LeagueID": "00",
+                "MeasureType": "Advanced",
+            })
+            adv_cols, adv_rows = parse_rs(adv_data, 0)
+            df_adv = pd.DataFrame(adv_rows, columns=adv_cols)
+            # Build lookup: (PLAYER_ID, GAME_ID) → USG_PCT
+            usg_col = 'USG_PCT' if 'USG_PCT' in df_adv.columns else None
+            if usg_col:
+                df_adv['_key'] = df_adv['PLAYER_ID'].astype(str) + '_' + df_adv['GAME_ID'].astype(str)
+                usg_lookup = dict(zip(df_adv['_key'], df_adv[usg_col]))
+                print(f"  ✓ {len(usg_lookup)} usage rate entries")
+            else:
+                usg_lookup = {}
+                print("  ⚠ USG_PCT not found in advanced logs — will store NULL")
+        except Exception as e:
+            usg_lookup = {}
+            print(f"  ⚠ Advanced logs failed ({e}) — usage_rate will be NULL")
+        time.sleep(1)
+
+        # ── Save player stat lines ────────────────────────────────────────────
         team_cache = {}
         saved      = 0
 
-        for _, row in df_all.iterrows():
+        for _, row in df_base.iterrows():
             player_name   = row.get('PLAYER_NAME', '')
             nba_player_id = safe_int(row.get('PLAYER_ID'))
             nba_team_id   = safe_int(row.get('TEAM_ID'))
@@ -408,6 +532,10 @@ def fetch_player_gamelogs(season="2025-26"):
             plus_minus = safe_int(row.get('PLUS_MINUS'))
             minutes    = safe_float(row.get('MIN'))
 
+            # Look up usage from advanced logs
+            usg_key    = f"{nba_player_id}_{nba_game_id}"
+            usage_rate = safe_float(usg_lookup.get(usg_key)) if usg_lookup.get(usg_key) is not None else None
+
             db.add(PlayerGameStats(
                 player_id      = player.id,
                 game_id        = game_cache[nba_game_id],
@@ -430,6 +558,7 @@ def fetch_player_gamelogs(season="2025-26"):
                 blocks         = blocks,
                 turnovers      = turnovers,
                 plus_minus     = plus_minus,
+                usage_rate     = usage_rate,
                 pra            = points + rebounds + assists,
                 pr             = points + rebounds,
                 pa             = points + assists,
@@ -440,7 +569,7 @@ def fetch_player_gamelogs(season="2025-26"):
 
             if saved % 500 == 0:
                 db.commit()
-                print(f"  Saved {saved} / {len(df_all)} stat lines...")
+                print(f"  Saved {saved} / {len(df_base)} stat lines...")
 
         db.commit()
         print(f"  ✓ Saved {saved} player stat lines")
@@ -477,10 +606,10 @@ if __name__ == "__main__":
     print(f"\n[4/6] Players: position + jersey from rosters...")
     seed_players_with_details(season=season)
 
-    print(f"\n[5/6] Points allowed by position...")
-    fetch_pts_allowed_by_position(season=season)
+    print(f"\n[5/6] Defensive stats by position (PTS/AST/REB/STL/BLK + ranks)...")
+    fetch_defensive_stats_by_position(season=season)
 
-    print(f"\n[6/6] Game logs + real scores...")
+    print(f"\n[6/6] Game logs + real scores + usage rate...")
     fetch_player_gamelogs(season=season)
 
     print("\n" + "=" * 55)

@@ -28,7 +28,9 @@ print(f"  Missing pace:             {db.query(Team).filter(Team.pace == None).co
 print(f"  Missing offensive_rating: {db.query(Team).filter(Team.offensive_rating == None).count()}")
 print(f"  Missing defensive_rating: {db.query(Team).filter(Team.defensive_rating == None).count()}")
 print(f"  Missing points_per_game:  {db.query(Team).filter(Team.points_per_game == None).count()}")
-print(f"  Missing pts_allowed_pg:   {db.query(Team).filter(Team.pts_allowed_pg == None).count()}")
+print(f"  Missing pts_allowed_g:    {db.query(Team).filter(Team.pts_allowed_g == None).count()}")
+print(f"  Missing ast_allowed_g:    {db.query(Team).filter(Team.ast_allowed_g == None).count()}")
+print(f"  Missing reb_allowed_g:    {db.query(Team).filter(Team.reb_allowed_g == None).count()}")
 print(f"  Missing wins:             {db.query(Team).filter(Team.wins == None).count()}")
 
 # ── Games null check ──────────────────────────────────────
@@ -45,6 +47,7 @@ print(f"  Missing game_id:    {db.query(PlayerGameStats).filter(PlayerGameStats.
 print(f"  Missing steals:     {db.query(PlayerGameStats).filter(PlayerGameStats.steals == None).count()}")
 print(f"  Missing blocks:     {db.query(PlayerGameStats).filter(PlayerGameStats.blocks == None).count()}")
 print(f"  Missing ftm:        {db.query(PlayerGameStats).filter(PlayerGameStats.ftm == None).count()}")
+print(f"  Missing usage_rate: {db.query(PlayerGameStats).filter(PlayerGameStats.usage_rate == None).count()}")
 
 # ── Sample team stats ─────────────────────────────────────
 print("\n SAMPLE — 5 TEAMS WITH FULL STATS")
@@ -52,11 +55,22 @@ teams = db.query(Team).filter(Team.pace != None).limit(5).all()
 for t in teams:
     print(f"  {t.name:<30} Pace:{t.pace}  OffRtg:{t.offensive_rating}  DefRtg:{t.defensive_rating}  PPG:{t.points_per_game}  W:{t.wins}-{t.losses}")
 
-# ── Sample pts allowed by position ───────────────────────
-print("\n SAMPLE — 3 TEAMS PTS ALLOWED BY POSITION")
-teams2 = db.query(Team).filter(Team.pts_allowed_pg != None).limit(3).all()
-for t in teams2:
-    print(f"  {t.name:<30} PG:{t.pts_allowed_pg}  SG:{t.pts_allowed_sg}  SF:{t.pts_allowed_sf}  PF:{t.pts_allowed_pf}  C:{t.pts_allowed_c}")
+# ── Defensive stats by position ───────────────────────────
+print("\n DEFENSIVE STATS BY POSITION — G (sorted by most PTS allowed)")
+g_teams = db.query(Team).filter(Team.pts_allowed_g != None).all()
+g_sorted = sorted(g_teams, key=lambda t: t.pts_allowed_g, reverse=True)
+print(f"  {'Rank':<5} {'Team':<30} {'PTS':>6} {'AST':>6} {'REB':>6} {'STL':>6} {'BLK':>6}")
+print(f"  {'-'*4:<5} {'-'*29:<30} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6}")
+for t in g_sorted:
+    print(f"  #{t.pts_rank_g:<4} {t.name:<30} {t.pts_allowed_g:>6.2f} {(t.ast_allowed_g or 0):>6.2f} {(t.reb_allowed_g or 0):>6.2f} {(t.stl_allowed_g or 0):>6.2f} {(t.blk_allowed_g or 0):>6.2f}")
+
+print("\n DEFENSIVE STATS BY POSITION — C (sorted by most PTS allowed)")
+c_teams = db.query(Team).filter(Team.pts_allowed_c != None).all()
+c_sorted = sorted(c_teams, key=lambda t: t.pts_allowed_c, reverse=True)
+print(f"  {'Rank':<5} {'Team':<30} {'PTS':>6} {'AST':>6} {'REB':>6} {'STL':>6} {'BLK':>6}")
+print(f"  {'-'*4:<5} {'-'*29:<30} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6} {'-'*6:>6}")
+for t in c_sorted:
+    print(f"  #{t.pts_rank_c:<4} {t.name:<30} {t.pts_allowed_c:>6.2f} {(t.ast_allowed_c or 0):>6.2f} {(t.reb_allowed_c or 0):>6.2f} {(t.stl_allowed_c or 0):>6.2f} {(t.blk_allowed_c or 0):>6.2f}")
 
 # ── Sample game scores ────────────────────────────────────
 print("\n SAMPLE — 5 GAMES WITH SCORES")
@@ -76,7 +90,20 @@ top = (
     .all()
 )
 for stat, player in top:
-    print(f"  {player.name:<25} PRA:{stat.pra}  PTS:{stat.points}  REB:{stat.rebounds}  AST:{stat.assists}  STL:{stat.steals}  BLK:{stat.blocks}")
+    print(f"  {player.name:<25} PRA:{stat.pra}  PTS:{stat.points}  REB:{stat.rebounds}  AST:{stat.assists}  STL:{stat.steals}  BLK:{stat.blocks}  USG:{stat.usage_rate}")
+
+# ── Usage rate sample ─────────────────────────────────────
+print("\n SAMPLE — TOP 5 USAGE RATE GAMES")
+top_usg = (
+    db.query(PlayerGameStats, Player)
+    .join(Player, PlayerGameStats.player_id == Player.id)
+    .filter(PlayerGameStats.usage_rate != None)
+    .order_by(desc(PlayerGameStats.usage_rate))
+    .limit(5)
+    .all()
+)
+for stat, player in top_usg:
+    print(f"  {player.name:<25} USG:{stat.usage_rate:.1f}%  PTS:{stat.points}  MIN:{stat.minutes:.0f}")
 
 print("\n" + "=" * 55)
 db.close()
