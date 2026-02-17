@@ -3,6 +3,7 @@
 ## RESET DATABASE (wipe all data — do this before re-running fetcher)
 Run in TablePlus SQL editor (Ctrl+Enter to execute):
 ```
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -d sportsanalytics
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 ```
