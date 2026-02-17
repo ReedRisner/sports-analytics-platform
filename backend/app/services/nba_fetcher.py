@@ -21,7 +21,7 @@ GAMELOGS_ADVANCED_URL = "https://stats.nba.com/stats/playergamelogs"   # same en
 TEAMGAMELOGS_URL      = "https://stats.nba.com/stats/teamgamelogs"
 ROSTER_URL            = "https://stats.nba.com/stats/commonteamroster"
 STANDINGS_URL         = "https://stats.nba.com/stats/leaguestandingsv3"
-FALLBACK              = "2024-25"
+FALLBACK              = "2025-26"
 
 # ── Position bucketing ────────────────────────────────────────────────────────
 # NBA API raw values → our 5 canonical groups
@@ -279,7 +279,13 @@ def fetch_defensive_stats_by_position(season="2025-26"):
     For each team, compute the average PTS/AST/REB/STL/BLK allowed to opposing
     players grouped by position bucket (G, GF, F, FC, C), then rank all 30
     teams per stat+position combo (rank 1 = most allowed = best matchup).
+
+    Only player-games with MIN >= MIN_DEF_MINUTES are counted so that
+    garbage-time appearances don't dilute the averages. This means the
+    defensive numbers reflect real, meaningful minutes played against each team.
     """
+    MIN_DEF_MINUTES = 15.0   # only count games where opp player played 15+ min
+
     db = SessionLocal()
     try:
         print(f"  Fetching player gamelogs for defensive position breakdown...")
@@ -288,7 +294,12 @@ def fetch_defensive_stats_by_position(season="2025-26"):
         })
         col_names, rows = parse_rs(data, 0)
         df = pd.DataFrame(rows, columns=col_names)
-        print(f"  ✓ {len(df)} player-game rows")
+        print(f"  ✓ {len(df)} player-game rows (before minutes filter)")
+
+        # ── Minutes filter — only meaningful appearances ──────────────────────
+        df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce').fillna(0)
+        df = df[df['MIN'] >= MIN_DEF_MINUTES].copy()
+        print(f"  ✓ {len(df)} rows after MIN >= {MIN_DEF_MINUTES} filter")
 
         # Build lookups
         players_q  = db.query(Player.id, Player.position).filter(Player.position != None).all()

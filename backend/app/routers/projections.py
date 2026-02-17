@@ -1,0 +1,287 @@
+# backend/app/routers/projections.py
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from typing import Optional
+from datetime import date
+
+from app.database import get_db
+from app.models.player import Player, Team, Game, PlayerGameStats
+from app.services.projection_engine import (
+    project_player,
+    STAT_CONFIG,
+)
+
+router = APIRouter(prefix="/projections", tags=["projections"])
+
+
+def _proj_to_dict(proj) -> dict:
+    return {
+        "player_id":      proj.player_id,
+        "player_name":    proj.player_name,
+        "team_name":      proj.team_name,
+        "position":       proj.position,
+        "stat_type":      proj.stat_type,
+        "projected":      proj.projected,
+        "season_avg":     proj.season_avg,
+        "l5_avg":         proj.l5_avg,
+        "l10_avg":        proj.l10_avg,
+        "std_dev":        proj.std_dev,
+        "floor":          proj.floor,
+        "ceiling":        proj.ceiling,
+        "games_played":   proj.games_played,
+        "matchup": {
+            "opp_name":       proj.matchup.opp_name,
+            "opp_pace":       proj.matchup.opp_pace,
+            "def_rank":       proj.matchup.def_rank,
+            "matchup_grade":  proj.matchup.matchup_grade,
+            "pace_factor":    round(proj.matchup.pace_factor, 3),
+            "matchup_factor": round(proj.matchup.matchup_factor, 3),
+        } if proj.matchup else None,
+        "line":           proj.line,
+        "edge_pct":       proj.edge_pct,
+        "over_prob":      proj.over_prob,
+        "under_prob":     proj.under_prob,
+        "recommendation": proj.recommendation,
+    }
+
+
+# ── GET /projections/today ────────────────────────────────────────────────────
+@router.get("/today")
+def today_projections(
+    stat_type: str = Query("points", description="Stat to project"),
+    min_projected: float = Query(0.0, description="Minimum projected value filter"),
+    position:  Optional[str] = Query(None, description="Filter by position: G, G-F, F, F-C, C"),
+    db: Session = Depends(get_db),
+):
+    """
+    All player projections for today's games, sorted by projected value.
+    Use this as the main dashboard feed.
+    """
+    if stat_type not in STAT_CONFIG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid stat_type. Options: {list(STAT_CONFIG.keys())}"
+        )
+
+    latest_game = db.query(Game).order_by(desc(Game.date)).first()
+    if not latest_game:
+        return {"projections": [], "date": str(date.today())}
+
+    game_date = latest_game.date
+    games = db.query(Game).filter(Game.date == game_date).all()
+
+    results = []
+    for game in games:
+        for team_id, opp_id in [
+            (game.home_team_id, game.away_team_id),
+            (game.away_team_id, game.home_team_id),
+        ]:
+            if position:
+                players = db.query(Player).filter(
+                    Player.team_id == team_id,
+                    Player.is_active == True,
+                    Player.position == position.upper(),
+                ).all()
+            else:
+                players = db.query(Player).filter(
+                    Player.team_id == team_id,
+                    Player.is_active == True,
+                ).all()
+
+            for player in players:
+                proj = project_player(db, player.id, stat_type, opp_id)
+                if proj and proj.projected >= min_projected:
+                    results.append(_proj_to_dict(proj))
+
+    results.sort(key=lambda x: x["projected"], reverse=True)
+    return {
+        "date":        str(game_date),
+        "stat_type":   stat_type,
+        "count":       len(results),
+        "projections": results,
+    }
+
+
+# ── GET /projections/edge-finder ──────────────────────────────────────────────
+@router.get("/edge-finder")
+def edge_finder(
+    db: Session = Depends(get_db),
+):
+    """
+    Placeholder for the edge finder.
+    Will be powered once odds lines are stored in the database.
+    Returns top projections for today sorted by matchup grade
+    as a proxy for edge until lines are integrated.
+    """
+    latest_game = db.query(Game).order_by(desc(Game.date)).first()
+    if not latest_game:
+        return {"edges": [], "message": "No games found"}
+
+    game_date = latest_game.date
+    games = db.query(Game).filter(Game.date == game_date).all()
+
+    results = []
+    for game in games:
+        for team_id, opp_id in [
+            (game.home_team_id, game.away_team_id),
+            (game.away_team_id, game.home_team_id),
+        ]:
+            players = db.query(Player).filter(
+                Player.team_id == team_id,
+                Player.is_active == True,
+            ).all()
+
+            for player in players:
+                proj = project_player(db, player.id, "points", opp_id)
+                if not proj or proj.projected <= 0:
+                    continue
+
+                # Score the matchup quality (lower def_rank = easier matchup)
+                rank = proj.matchup.def_rank if proj.matchup else 15
+                matchup_score = (30 - rank) if rank else 0
+
+                results.append({
+                    **_proj_to_dict(proj),
+                    "matchup_score": matchup_score,
+                })
+
+    # Sort by matchup score (best matchup first) then projected
+    results.sort(key=lambda x: (x["matchup_score"], x["projected"]), reverse=True)
+    return {
+        "date":    str(game_date),
+        "note":    "Edge % will populate once odds lines are integrated. Sorted by matchup favorability.",
+        "count":   len(results),
+        "edges":   results[:50],
+    }
+
+
+# ── POST /projections/with-line ───────────────────────────────────────────────
+@router.post("/with-line")
+def project_with_line(
+    player_id:   int,
+    stat_type:   str,
+    line:        float,
+    opp_team_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Project a player against a specific sportsbook line.
+    Returns edge %, over/under probability, and recommendation.
+    This is the core endpoint for prop betting analysis.
+    """
+    if stat_type not in STAT_CONFIG:
+        raise HTTPException(status_code=400, detail=f"Invalid stat_type")
+
+    proj = project_player(db, player_id, stat_type, opp_team_id, line)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Player not found or no stats available")
+
+    return _proj_to_dict(proj)
+
+
+# ── GET /projections/team/{team_id} ───────────────────────────────────────────
+@router.get("/team/{team_id}")
+def team_projections(
+    team_id:    int,
+    stat_type:  str = Query("points"),
+    opp_team_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """All player projections for a specific team."""
+    if stat_type not in STAT_CONFIG:
+        raise HTTPException(status_code=400, detail=f"Invalid stat_type")
+
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    players = db.query(Player).filter(
+        Player.team_id == team_id,
+        Player.is_active == True,
+    ).all()
+
+    results = []
+    for player in players:
+        proj = project_player(db, player.id, stat_type, opp_team_id)
+        if proj and proj.projected > 0:
+            results.append(_proj_to_dict(proj))
+
+    results.sort(key=lambda x: x["projected"], reverse=True)
+    return {
+        "team_id":     team_id,
+        "team_name":   team.name,
+        "stat_type":   stat_type,
+        "count":       len(results),
+        "projections": results,
+    }
+
+
+# ── GET /projections/matchup-rankings ─────────────────────────────────────────
+@router.get("/matchup-rankings")
+def matchup_rankings(
+    stat_type: str = Query("points"),
+    position:  str = Query("G", description="Position bucket: G, GF, F, FC, C"),
+    db: Session = Depends(get_db),
+):
+    """
+    Rank all 30 teams by how many points/rebounds/etc they allow
+    to a specific position group. Great for finding soft matchups.
+    """
+    # Map position param → column suffix
+    pos_map = {"G": "g", "GF": "gf", "F": "f", "FC": "fc", "C": "c"}
+    col_suffix = pos_map.get(position.upper())
+    if not col_suffix:
+        raise HTTPException(status_code=400, detail="Invalid position. Use: G, GF, F, FC, C")
+
+    stat_map = {
+        "points": "pts", "rebounds": "reb", "assists": "ast",
+        "steals": "stl", "blocks": "blk",
+    }
+    stat_prefix = stat_map.get(stat_type)
+    if not stat_prefix:
+        raise HTTPException(status_code=400, detail="Use: points, rebounds, assists, steals, blocks")
+
+    avg_col  = f"{stat_prefix}_allowed_{col_suffix}"
+    rank_col = f"{stat_prefix}_rank_{col_suffix}"
+
+    teams = db.query(Team).filter(
+        getattr(Team, avg_col) != None
+    ).all()
+
+    result = []
+    for t in teams:
+        result.append({
+            "team_id":     t.id,
+            "team_name":   t.name,
+            "abbr":        t.abbreviation,
+            "record":      f"{t.wins}-{t.losses}",
+            "allowed_avg": round(_safe(getattr(t, avg_col)), 2),
+            "rank":        getattr(t, rank_col),
+            "matchup_grade": _grade_from_rank(getattr(t, rank_col)),
+        })
+
+    result.sort(key=lambda x: x["rank"] or 99)
+    return {
+        "stat_type": stat_type,
+        "position":  position.upper(),
+        "note":      "Rank 1 = most permissive (best matchup). Rank 30 = toughest.",
+        "teams":     result,
+    }
+
+
+def _safe(val, default=0.0):
+    try:
+        return float(val) if val is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _grade_from_rank(rank):
+    if rank is None:
+        return "Unknown"
+    if rank <= 5:   return "Elite"
+    if rank <= 10:  return "Good"
+    if rank <= 20:  return "Neutral"
+    if rank <= 25:  return "Tough"
+    return "Lockdown"

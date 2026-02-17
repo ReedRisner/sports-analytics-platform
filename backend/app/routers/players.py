@@ -1,0 +1,255 @@
+# backend/app/routers/players.py
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from typing import Optional
+
+from app.database import get_db
+from app.models.player import Player, PlayerGameStats, Team, Game
+from app.services.projection_engine import (
+    project_player,
+    get_player_stat_lines,
+    compute_stat_averages,
+    STAT_CONFIG,
+)
+
+router = APIRouter(prefix="/players", tags=["players"])
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _safe(val, default=0.0):
+    try:
+        return float(val) if val is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _projection_to_dict(proj) -> dict:
+    if proj is None:
+        return {}
+    return {
+        "projected":       proj.projected,
+        "season_avg":      proj.season_avg,
+        "l5_avg":          proj.l5_avg,
+        "l10_avg":         proj.l10_avg,
+        "std_dev":         proj.std_dev,
+        "floor":           proj.floor,
+        "ceiling":         proj.ceiling,
+        "games_played":    proj.games_played,
+        "matchup": {
+            "opp_team_id":    proj.matchup.opp_team_id,
+            "opp_name":       proj.matchup.opp_name,
+            "opp_pace":       proj.matchup.opp_pace,
+            "allowed_avg":    proj.matchup.allowed_avg,
+            "def_rank":       proj.matchup.def_rank,
+            "pace_factor":    round(proj.matchup.pace_factor, 3),
+            "matchup_factor": round(proj.matchup.matchup_factor, 3),
+            "matchup_grade":  proj.matchup.matchup_grade,
+        } if proj.matchup else None,
+        "line":            proj.line,
+        "edge_pct":        proj.edge_pct,
+        "over_prob":       proj.over_prob,
+        "under_prob":      proj.under_prob,
+        "recommendation":  proj.recommendation,
+    }
+
+
+# ── GET /players ──────────────────────────────────────────────────────────────
+@router.get("")
+def list_players(
+    team_id:  Optional[int] = Query(None),
+    position: Optional[str] = Query(None),
+    search:   Optional[str] = Query(None),
+    limit:    int           = Query(50, le=200),
+    db: Session = Depends(get_db),
+):
+    """List players with optional filters."""
+    q = db.query(Player, Team).join(Team, Player.team_id == Team.id, isouter=True)
+
+    if team_id:
+        q = q.filter(Player.team_id == team_id)
+    if position:
+        q = q.filter(Player.position == position.upper())
+    if search:
+        q = q.filter(Player.name.ilike(f"%{search}%"))
+
+    q = q.filter(Player.is_active == True).limit(limit)
+    rows = q.all()
+
+    return {
+        "players": [
+            {
+                "id":           p.id,
+                "name":         p.name,
+                "position":     p.position,
+                "jersey":       p.jersey_number,
+                "team_id":      p.team_id,
+                "team_name":    t.name if t else None,
+                "team_abbr":    t.abbreviation if t else None,
+            }
+            for p, t in rows
+        ],
+        "count": len(rows),
+    }
+
+
+# ── GET /players/{player_id}/profile ─────────────────────────────────────────
+@router.get("/{player_id}/profile")
+def player_profile(
+    player_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Full player profile: bio, team info, season/L5/L10 averages for
+    all stat types, and last 10 game log.
+    """
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    team = db.query(Team).filter(Team.id == player.team_id).first()
+
+    # ── Compute averages for every stat type ──────────────────────────────────
+    averages = {}
+    for stat_type, (stat_col, _) in STAT_CONFIG.items():
+        values = get_player_stat_lines(db, player_id, stat_col)
+        avgs   = compute_stat_averages(values)
+        averages[stat_type] = {
+            "season_avg":   round(avgs.season_avg, 2),
+            "l5_avg":       round(avgs.l5_avg, 2),
+            "l10_avg":      round(avgs.l10_avg, 2),
+            "games_played": avgs.games_played,
+        }
+
+    # ── Last 10 game log ──────────────────────────────────────────────────────
+    recent_rows = (
+        db.query(PlayerGameStats, Game)
+        .join(Game, PlayerGameStats.game_id == Game.id)
+        .filter(PlayerGameStats.player_id == player_id)
+        .order_by(desc(Game.date))
+        .limit(10)
+        .all()
+    )
+
+    game_log = []
+    for stat, game in recent_rows:
+        home = db.query(Team).filter(Team.id == game.home_team_id).first()
+        away = db.query(Team).filter(Team.id == game.away_team_id).first()
+        is_home = game.home_team_id == player.team_id
+        opp = away if is_home else home
+
+        game_log.append({
+            "date":        str(game.date),
+            "opponent":    opp.abbreviation if opp else "?",
+            "home_away":   "vs" if is_home else "@",
+            "result":      _game_result(game, player.team_id),
+            "minutes":     round(_safe(stat.minutes), 1),
+            "points":      stat.points,
+            "rebounds":    stat.rebounds,
+            "assists":     stat.assists,
+            "steals":      stat.steals,
+            "blocks":      stat.blocks,
+            "turnovers":   stat.turnovers,
+            "pra":         stat.pra,
+            "fg":          f"{stat.fgm}/{stat.fga}",
+            "fg_pct":      round(_safe(stat.fg_pct) * 100, 1),
+            "fg3":         f"{stat.fg3m}/{stat.fg3a}",
+            "ft":          f"{stat.ftm}/{stat.fta}",
+            "usage_rate":  round(_safe(stat.usage_rate) * 100, 1),
+            "plus_minus":  stat.plus_minus,
+            "fantasy_pts": round(_safe(stat.fantasy_points), 1),
+        })
+
+    return {
+        "player": {
+            "id":           player.id,
+            "name":         player.name,
+            "position":     player.position,
+            "jersey":       player.jersey_number,
+            "team_id":      player.team_id,
+            "team_name":    team.name if team else None,
+            "team_abbr":    team.abbreviation if team else None,
+        },
+        "averages": averages,
+        "game_log": game_log,
+    }
+
+
+# ── GET /players/{player_id}/projection ──────────────────────────────────────
+@router.get("/{player_id}/projection")
+def player_projection(
+    player_id:   int,
+    stat_type:   str           = Query("points"),
+    opp_team_id: Optional[int] = Query(None),
+    line:        Optional[float] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Project a player for a specific stat type.
+    Optionally provide opp_team_id for matchup adjustments
+    and line for edge/probability calculation.
+    """
+    if stat_type not in STAT_CONFIG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid stat_type. Choose from: {list(STAT_CONFIG.keys())}"
+        )
+
+    proj = project_player(db, player_id, stat_type, opp_team_id, line)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Player not found or no stats available")
+
+    return {
+        "player_id":    proj.player_id,
+        "player_name":  proj.player_name,
+        "team_name":    proj.team_name,
+        "position":     proj.position,
+        "stat_type":    proj.stat_type,
+        **_projection_to_dict(proj),
+    }
+
+
+# ── GET /players/{player_id}/all-projections ─────────────────────────────────
+@router.get("/{player_id}/all-projections")
+def player_all_projections(
+    player_id:   int,
+    opp_team_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Project a player across ALL stat types at once.
+    Useful for building a full player card.
+    """
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    projections = {}
+    for stat_type in STAT_CONFIG:
+        proj = project_player(db, player_id, stat_type, opp_team_id)
+        if proj:
+            projections[stat_type] = _projection_to_dict(proj)
+
+    team = db.query(Team).filter(Team.id == player.team_id).first()
+
+    return {
+        "player": {
+            "id":        player.id,
+            "name":      player.name,
+            "position":  player.position,
+            "team_name": team.name if team else None,
+            "team_abbr": team.abbreviation if team else None,
+        },
+        "projections": projections,
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _game_result(game: Game, team_id: int) -> str:
+    if game.home_score is None or game.away_score is None:
+        return "—"
+    is_home = game.home_team_id == team_id
+    my_score  = game.home_score if is_home else game.away_score
+    opp_score = game.away_score if is_home else game.home_score
+    result = "W" if my_score > opp_score else "L"
+    return f"{result} {my_score}-{opp_score}"
