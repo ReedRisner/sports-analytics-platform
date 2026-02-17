@@ -27,6 +27,34 @@ def _safe(val, default=0.0):
 def _projection_to_dict(proj) -> dict:
     if proj is None:
         return {}
+
+    matchup_dict = None
+    if proj.matchup:
+        m = proj.matchup
+        matchup_dict = {
+            "opp_team_id":    m.opp_team_id,
+            "opp_name":       m.opp_name,
+            "opp_abbr":       m.opp_abbr,
+            "opp_pace":       m.opp_pace,
+            "allowed_avg":    round(m.allowed_avg, 2) if m.allowed_avg else None,
+            "def_rank":       m.def_rank,
+            "pace_factor":    round(m.pace_factor, 3),
+            "matchup_factor": round(m.matchup_factor, 3),
+            "matchup_grade":  m.matchup_grade,
+            "defense": {
+                "pts_allowed": round(m.pts_allowed, 2) if m.pts_allowed else None,
+                "reb_allowed": round(m.reb_allowed, 2) if m.reb_allowed else None,
+                "ast_allowed": round(m.ast_allowed, 2) if m.ast_allowed else None,
+                "stl_allowed": round(m.stl_allowed, 2) if m.stl_allowed else None,
+                "blk_allowed": round(m.blk_allowed, 2) if m.blk_allowed else None,
+                "pts_rank":    m.pts_rank,
+                "reb_rank":    m.reb_rank,
+                "ast_rank":    m.ast_rank,
+                "stl_rank":    m.stl_rank,
+                "blk_rank":    m.blk_rank,
+            },
+        }
+
     return {
         "projected":       proj.projected,
         "season_avg":      proj.season_avg,
@@ -36,16 +64,7 @@ def _projection_to_dict(proj) -> dict:
         "floor":           proj.floor,
         "ceiling":         proj.ceiling,
         "games_played":    proj.games_played,
-        "matchup": {
-            "opp_team_id":    proj.matchup.opp_team_id,
-            "opp_name":       proj.matchup.opp_name,
-            "opp_pace":       proj.matchup.opp_pace,
-            "allowed_avg":    proj.matchup.allowed_avg,
-            "def_rank":       proj.matchup.def_rank,
-            "pace_factor":    round(proj.matchup.pace_factor, 3),
-            "matchup_factor": round(proj.matchup.matchup_factor, 3),
-            "matchup_grade":  proj.matchup.matchup_grade,
-        } if proj.matchup else None,
+        "matchup":         matchup_dict,
         "line":            proj.line,
         "edge_pct":        proj.edge_pct,
         "over_prob":       proj.over_prob,

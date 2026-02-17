@@ -1,5 +1,5 @@
 # backend/app/models/player.py
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Date, DateTime
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Date, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -24,38 +24,30 @@ class Team(Base):
     losses              = Column(Integer, default=0)
 
     # ── Defensive stats allowed by position group ────────────────────────────
-    # Position groups: G (guard), GF (guard-forward), F (forward),
-    #                  FC (forward-center), C (center)
-    #
-    # Points allowed
     pts_allowed_g       = Column(Float)
     pts_allowed_gf      = Column(Float)
     pts_allowed_f       = Column(Float)
     pts_allowed_fc      = Column(Float)
     pts_allowed_c       = Column(Float)
 
-    # Assists allowed
     ast_allowed_g       = Column(Float)
     ast_allowed_gf      = Column(Float)
     ast_allowed_f       = Column(Float)
     ast_allowed_fc      = Column(Float)
     ast_allowed_c       = Column(Float)
 
-    # Rebounds allowed
     reb_allowed_g       = Column(Float)
     reb_allowed_gf      = Column(Float)
     reb_allowed_f       = Column(Float)
     reb_allowed_fc      = Column(Float)
     reb_allowed_c       = Column(Float)
 
-    # Steals allowed (opponent steals vs this team, by position)
     stl_allowed_g       = Column(Float)
     stl_allowed_gf      = Column(Float)
     stl_allowed_f       = Column(Float)
     stl_allowed_fc      = Column(Float)
     stl_allowed_c       = Column(Float)
 
-    # Blocks allowed (opponent blocks vs this team, by position)
     blk_allowed_g       = Column(Float)
     blk_allowed_gf      = Column(Float)
     blk_allowed_f       = Column(Float)
@@ -103,13 +95,14 @@ class Player(Base):
     id            = Column(Integer, primary_key=True, index=True)
     name          = Column(String(150), nullable=False)
     team_id       = Column(Integer, ForeignKey("teams.id"))
-    position      = Column(String(5))   # Raw NBA position: G, G-F, F, F-C, C, F-G, C-F
+    position      = Column(String(5))
     jersey_number = Column(Integer)
     is_active     = Column(Boolean, default=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     team  = relationship("Team", back_populates="players")
     stats = relationship("PlayerGameStats", back_populates="player")
+    odds  = relationship("OddsLine", back_populates="player")
 
 
 class Game(Base):
@@ -132,7 +125,6 @@ class PlayerGameStats(Base):
     player_id = Column(Integer, ForeignKey("players.id"))
     game_id   = Column(Integer, ForeignKey("games.id"))
 
-    # ── Core stats ───────────────────────────────────────────────────────────
     minutes    = Column(Float)
     points     = Column(Integer)
     rebounds   = Column(Integer)
@@ -140,7 +132,6 @@ class PlayerGameStats(Base):
     oreb       = Column(Integer)
     dreb       = Column(Integer)
 
-    # ── Shooting ─────────────────────────────────────────────────────────────
     fgm        = Column(Integer)
     fga        = Column(Integer)
     fg_pct     = Column(Float)
@@ -151,22 +142,55 @@ class PlayerGameStats(Base):
     fta        = Column(Integer)
     ft_pct     = Column(Float)
 
-    # ── Defense / other ──────────────────────────────────────────────────────
     steals     = Column(Integer)
     blocks     = Column(Integer)
     turnovers  = Column(Integer)
     plus_minus = Column(Integer)
 
-    # ── Advanced ─────────────────────────────────────────────────────────────
-    usage_rate = Column(Float)   # USG_PCT — key projection input
+    usage_rate = Column(Float)
 
-    # ── Combo stats ──────────────────────────────────────────────────────────
     pra        = Column(Float)
     pr         = Column(Float)
     pa         = Column(Float)
     ra         = Column(Float)
 
-    # ── Fantasy ──────────────────────────────────────────────────────────────
     fantasy_points = Column(Float)
 
     player = relationship("Player", back_populates="stats")
+
+
+class OddsLine(Base):
+    """
+    Stores sportsbook prop lines fetched from the Odds API.
+    One row per player + game + stat_type + sportsbook.
+    Upserted on each fetch — always reflects the latest line.
+    """
+    __tablename__ = "odds_lines"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    player_id   = Column(Integer, ForeignKey("players.id"), nullable=False)
+    game_id     = Column(Integer, ForeignKey("games.id"), nullable=False)
+
+    # e.g. "points", "rebounds", "assists"
+    stat_type   = Column(String(20), nullable=False)
+
+    # e.g. "fanduel", "draftkings", "betmgm"
+    sportsbook  = Column(String(50), nullable=False)
+
+    # The over/under line value (e.g. 27.5)
+    line        = Column(Float, nullable=False)
+
+    # Over/under odds in American format (e.g. -110)
+    over_odds   = Column(Integer)
+    under_odds  = Column(Integer)
+
+    # When this line was fetched
+    fetched_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Prevent duplicate rows for same player/game/stat/book
+    __table_args__ = (
+        UniqueConstraint("player_id", "game_id", "stat_type", "sportsbook",
+                         name="uq_odds_player_game_stat_book"),
+    )
+
+    player = relationship("Player", back_populates="odds")

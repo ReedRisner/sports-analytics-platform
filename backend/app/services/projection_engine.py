@@ -81,12 +81,25 @@ class StatLine:
 class MatchupContext:
     opp_team_id:    int
     opp_name:       str
+    opp_abbr:       str
     opp_pace:       float
-    allowed_avg:    Optional[float]
-    def_rank:       Optional[int]
+    allowed_avg:    Optional[float]   # allowed avg for THIS stat type
+    def_rank:       Optional[int]     # rank for THIS stat type (1 = most permissive)
     pace_factor:    float
     matchup_factor: float
     matchup_grade:  str
+
+    # Full defensive breakdown for the player's position bucket
+    pts_allowed:    Optional[float] = None
+    reb_allowed:    Optional[float] = None
+    ast_allowed:    Optional[float] = None
+    stl_allowed:    Optional[float] = None
+    blk_allowed:    Optional[float] = None
+    pts_rank:       Optional[int]   = None
+    reb_rank:       Optional[int]   = None
+    ast_rank:       Optional[int]   = None
+    stl_rank:       Optional[int]   = None
+    blk_rank:       Optional[int]   = None
 
 
 @dataclass
@@ -270,15 +283,33 @@ def get_matchup_context(
         matchup_factor = _avg(factors) if factors else 1.0
         def_rank       = getattr(opp, f"pts_rank_{bucket}", None)
 
+    # ── Full defensive breakdown for this position bucket ─────────────────────
+    def _get(stat, field):
+        if not bucket:
+            return None
+        return getattr(opp, f"{stat}_{field}_{bucket}", None)
+
     return MatchupContext(
         opp_team_id    = opp.id,
         opp_name       = opp.name,
+        opp_abbr       = opp.abbreviation or "",
         opp_pace       = opp_pace,
         allowed_avg    = allowed_avg,
         def_rank       = def_rank,
         pace_factor    = pace_factor,
         matchup_factor = matchup_factor,
         matchup_grade  = _matchup_grade(def_rank),
+        # All 5 stats allowed to this position group
+        pts_allowed    = _get("pts", "allowed"),
+        reb_allowed    = _get("reb", "allowed"),
+        ast_allowed    = _get("ast", "allowed"),
+        stl_allowed    = _get("stl", "allowed"),
+        blk_allowed    = _get("blk", "allowed"),
+        pts_rank       = _get("pts", "rank"),
+        reb_rank       = _get("reb", "rank"),
+        ast_rank       = _get("ast", "rank"),
+        stl_rank       = _get("stl", "rank"),
+        blk_rank       = _get("blk", "rank"),
     )
 
 

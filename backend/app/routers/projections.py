@@ -16,6 +16,33 @@ router = APIRouter(prefix="/projections", tags=["projections"])
 
 
 def _proj_to_dict(proj) -> dict:
+    matchup_dict = None
+    if proj.matchup:
+        m = proj.matchup
+        matchup_dict = {
+            "opp_name":       m.opp_name,
+            "opp_abbr":       m.opp_abbr,
+            "opp_pace":       m.opp_pace,
+            "def_rank":       m.def_rank,
+            "matchup_grade":  m.matchup_grade,
+            "pace_factor":    round(m.pace_factor, 3),
+            "matchup_factor": round(m.matchup_factor, 3),
+            "allowed_avg":    round(m.allowed_avg, 2) if m.allowed_avg else None,
+            # Full defensive breakdown for this player's position group
+            "defense": {
+                "pts_allowed": round(m.pts_allowed, 2) if m.pts_allowed else None,
+                "reb_allowed": round(m.reb_allowed, 2) if m.reb_allowed else None,
+                "ast_allowed": round(m.ast_allowed, 2) if m.ast_allowed else None,
+                "stl_allowed": round(m.stl_allowed, 2) if m.stl_allowed else None,
+                "blk_allowed": round(m.blk_allowed, 2) if m.blk_allowed else None,
+                "pts_rank":    m.pts_rank,
+                "reb_rank":    m.reb_rank,
+                "ast_rank":    m.ast_rank,
+                "stl_rank":    m.stl_rank,
+                "blk_rank":    m.blk_rank,
+            },
+        }
+
     return {
         "player_id":      proj.player_id,
         "player_name":    proj.player_name,
@@ -30,14 +57,7 @@ def _proj_to_dict(proj) -> dict:
         "floor":          proj.floor,
         "ceiling":        proj.ceiling,
         "games_played":   proj.games_played,
-        "matchup": {
-            "opp_name":       proj.matchup.opp_name,
-            "opp_pace":       proj.matchup.opp_pace,
-            "def_rank":       proj.matchup.def_rank,
-            "matchup_grade":  proj.matchup.matchup_grade,
-            "pace_factor":    round(proj.matchup.pace_factor, 3),
-            "matchup_factor": round(proj.matchup.matchup_factor, 3),
-        } if proj.matchup else None,
+        "matchup":        matchup_dict,
         "line":           proj.line,
         "edge_pct":       proj.edge_pct,
         "over_prob":      proj.over_prob,
