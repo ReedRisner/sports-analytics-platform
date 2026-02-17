@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional
-from datetime import date
+from datetime import date, timedelta
 
 from app.database import get_db
 from app.models.player import Player, Team, Game, OddsLine
@@ -19,6 +19,24 @@ def _safe(val, default=0.0):
         return default
 
 
+def _nearest_game_date(db) -> date | None:
+    """
+    Returns the nearest date (today or up to 3 days ahead) that has
+    odds lines stored. Falls back to today if nothing found.
+    """
+    for days_ahead in range(4):
+        check_date = date.today() + timedelta(days=days_ahead)
+        games = db.query(Game).filter(Game.date == check_date).all()
+        game_ids = [g.id for g in games]
+        if game_ids:
+            from app.models.player import OddsLine as OL
+            count = db.query(OL).filter(OL.game_id.in_(game_ids)).count()
+            if count > 0:
+                return check_date
+    # fallback — return today even if no lines, so endpoints don't break
+    return date.today()
+
+
 # ── GET /odds/today ───────────────────────────────────────────────────────────
 @router.get("/today")
 def todays_odds(
@@ -30,12 +48,12 @@ def todays_odds(
     All prop lines fetched for today's games.
     Shows raw lines without projections.
     """
-    today = date.today()
+    today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
     game_ids = [g.id for g in games]
 
     if not game_ids:
-        return {"lines": [], "date": str(today), "message": "No games today"}
+        return {"lines": [], "date": str(today), "message": "No games or lines found in next 3 days"}
 
     q = db.query(OddsLine).filter(OddsLine.game_id.in_(game_ids))
     if stat_type:
@@ -80,12 +98,12 @@ def edge_finder(
     THE core endpoint. Compares our projections against real sportsbook lines.
     Returns players where our model disagrees with the book by min_edge_pct or more.
     """
-    today = date.today()
+    today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
     game_ids = [g.id for g in games]
 
     if not game_ids:
-        return {"edges": [], "message": "No games today"}
+        return {"edges": [], "message": "No games or lines found in next 3 days"}
 
     # Get all lines for today matching filters
     lines = db.query(OddsLine).filter(
@@ -186,7 +204,7 @@ def player_odds(
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    today = date.today()
+    today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
     game_ids = [g.id for g in games]
 

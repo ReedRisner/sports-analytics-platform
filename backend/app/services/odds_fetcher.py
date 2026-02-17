@@ -3,21 +3,21 @@
 Odds API fetcher — pulls NBA player prop lines and saves to the DB.
 
 Credit-efficient design for 500 credits/month:
-  - Fetches today's games only
+  - Checks today first, then up to 3 days ahead for upcoming games
   - Only pulls 3 markets: player_points, player_rebounds, player_assists
   - Upserts into odds_lines table (no duplicates)
   - Scheduled twice daily at midnight and noon PST (08:00 and 20:00 UTC)
 
 Odds API cost breakdown:
-  - 1 request to get today's events (1 credit)
-  - 1 request per game per market batch (~1 credit/game)
+  - 1 request to get upcoming events list (1 credit)
+  - 1 request per game for props (~1 credit/game)
   - 5 games/day × 2 fetches × ~2 credits = ~20 credits/day
   - Well within 500/month limit
 """
 
 import httpx
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
@@ -90,8 +90,45 @@ def _find_player(db: Session, odds_name: str) -> Player | None:
             best_score  = score
             best_player = p
 
-    if best_score >= 0.85:
+def _find_player(db: Session, odds_name: str) -> Player | None:
+    """
+    Match an Odds API player name to a DB player.
+    Tries exact match first, then fuzzy match, then last-name fallback.
+    """
+    normalized = _normalize(odds_name)
+
+    # Load all active players once per call
+    players = db.query(Player).filter(Player.is_active == True).all()
+
+    # 1. Exact normalized match
+    for p in players:
+        if _normalize(p.name) == normalized:
+            return p
+
+    # 2. Fuzzy match — 0.82 threshold catches "Nic Claxton" vs "Nicolas Claxton"
+    best_score  = 0.0
+    best_player = None
+    for p in players:
+        score = SequenceMatcher(None, _normalize(p.name), normalized).ratio()
+        if score > best_score:
+            best_score  = score
+            best_player = p
+
+    if best_score >= 0.82:
         return best_player
+
+    # 3. Last-name + first-initial fallback for suffixes like "Ron Holland II"
+    odds_parts = normalized.split()
+    if len(odds_parts) >= 2:
+        odds_last  = odds_parts[-1]
+        odds_first = odds_parts[0][0] if odds_parts[0] else ""
+        for p in players:
+            db_parts = _normalize(p.name).split()
+            if len(db_parts) >= 2:
+                db_last  = db_parts[-1]
+                db_first = db_parts[0][0] if db_parts[0] else ""
+                if odds_last == db_last and odds_first == db_first:
+                    return p
 
     logger.warning(f"Could not match odds player: '{odds_name}' (best score: {best_score:.2f})")
     return None
@@ -137,29 +174,50 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
             summary["credits_used"] += 1
 
             events = events_resp.json()
-            today_str = date.today().isoformat()
 
-            # Filter to today's games only
-            todays_events = [
-                e for e in events
-                if e.get("commence_time", "").startswith(today_str)
-            ]
+            # The Odds API returns commence_time in UTC. A 7pm EST game on
+            # Feb 19 = midnight UTC Feb 20, so the API may report it one day
+            # ahead of our DB date. For each candidate day we collect events
+            # on that UTC date AND the next UTC date, then _find_game handles
+            # matching to the correct local DB date.
+            target_events = []
+            target_date   = None
+            for days_ahead in range(4):   # 0=today, 1=tomorrow, 2, 3
+                check_date  = date.today() + timedelta(days=days_ahead)
+                next_date   = check_date + timedelta(days=1)
+                check_str   = check_date.isoformat()
+                next_str    = next_date.isoformat()
+                day_events  = [
+                    e for e in events
+                    if e.get("commence_time", "").startswith(check_str)
+                    or e.get("commence_time", "").startswith(next_str)
+                ]
+                if day_events:
+                    target_events = day_events
+                    target_date   = check_date
+                    break
 
-            if not todays_events:
-                logger.info("No NBA games today — skipping odds fetch")
-                summary["errors"].append("No games today")
+            if not target_events:
+                logger.info("No NBA games in the next 3 days — skipping odds fetch")
+                summary["errors"].append("No games in next 3 days")
                 return summary
 
-            logger.info(f"Found {len(todays_events)} NBA games today")
+            if target_date == date.today():
+                logger.info(f"Found {len(target_events)} NBA games today")
+            else:
+                days_out = (target_date - date.today()).days
+                logger.info(f"No games today — found {len(target_events)} games on {target_date} ({days_out} day(s) ahead)")
+
+            summary["target_date"] = str(target_date)
 
             # ── Step 2: Fetch props per event ─────────────────────────────────
-            for event in todays_events:
+            for event in target_events:
                 event_id   = event["id"]
                 home_team  = event.get("home_team", "")
                 away_team  = event.get("away_team", "")
 
                 # Find matching game in our DB
-                game = _find_game(db, home_team, away_team)
+                game = _find_game(db, home_team, away_team, game_date=target_date)
                 if not game:
                     logger.warning(f"Could not match game: {away_team} @ {home_team}")
                     summary["errors"].append(f"No DB match: {away_team} @ {home_team}")
@@ -201,31 +259,39 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
             db.close()
 
 
-def _find_game(db: Session, home_team: str, away_team: str) -> Game | None:
+def _find_game(db: Session, home_team: str, away_team: str, game_date: date | None = None) -> Game | None:
     """
-    Match Odds API team names to our DB games for today.
-    Odds API uses full city+name (e.g. "Los Angeles Lakers") which
-    matches our Team.name column directly.
-    """
-    today = date.today()
-    games = db.query(Game).filter(Game.date == today).all()
+    Match Odds API team names to our DB games.
 
+    The Odds API returns commence_time in UTC. A game that tips at 7pm EST
+    on Feb 19 has a UTC time of midnight Feb 20, so the Odds API reports it
+    as Feb 20 while our DB stores it as Feb 19 (local date). We check both
+    the target date AND the day before to handle this timezone shift.
+    """
     from app.models.player import Team
+    from datetime import timedelta
 
-    for game in games:
-        home = db.query(Team).filter(Team.id == game.home_team_id).first()
-        away = db.query(Team).filter(Team.id == game.away_team_id).first()
-        if not home or not away:
-            continue
+    game_date = game_date or date.today()
 
-        # Fuzzy match both teams
-        home_score = SequenceMatcher(None,
-            _normalize(home.name), _normalize(home_team)).ratio()
-        away_score = SequenceMatcher(None,
-            _normalize(away.name), _normalize(away_team)).ratio()
+    # Check target date first, then the day before (UTC vs local date offset)
+    dates_to_check = [game_date, game_date - timedelta(days=1)]
 
-        if home_score >= 0.80 and away_score >= 0.80:
-            return game
+    for check_date in dates_to_check:
+        games = db.query(Game).filter(Game.date == check_date).all()
+
+        for game in games:
+            home = db.query(Team).filter(Team.id == game.home_team_id).first()
+            away = db.query(Team).filter(Team.id == game.away_team_id).first()
+            if not home or not away:
+                continue
+
+            home_score = SequenceMatcher(None,
+                _normalize(home.name), _normalize(home_team)).ratio()
+            away_score = SequenceMatcher(None,
+                _normalize(away.name), _normalize(away_team)).ratio()
+
+            if home_score >= 0.80 and away_score >= 0.80:
+                return game
 
     return None
 

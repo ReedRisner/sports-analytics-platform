@@ -17,11 +17,11 @@ SESSION.headers.update({
 })
 
 GAMELOGS_URL          = "https://stats.nba.com/stats/playergamelogs"
-GAMELOGS_ADVANCED_URL = "https://stats.nba.com/stats/playergamelogs"   # same endpoint, measure type param
+GAMELOGS_ADVANCED_URL = "https://stats.nba.com/stats/playergamelogs"
 TEAMGAMELOGS_URL      = "https://stats.nba.com/stats/teamgamelogs"
 ROSTER_URL            = "https://stats.nba.com/stats/commonteamroster"
 STANDINGS_URL         = "https://stats.nba.com/stats/leaguestandingsv3"
-FALLBACK              = "2025-26"
+FALLBACK              = "2024-25"
 
 # ── Position bucketing ────────────────────────────────────────────────────────
 # NBA API raw values → our 5 canonical groups
@@ -595,6 +595,107 @@ def fetch_player_gamelogs(season="2025-26"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STEP 7 — Full season schedule (past + future games)
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_schedule(season="2025-26"):
+    """
+    Pull the complete NBA regular season schedule via scheduleleaguev2.
+
+    Response structure:
+      leagueSchedule.gameDates[].games[]
+        gameId, gameStatus, gameStatusText, gameDate*
+        homeTeam.teamId, awayTeam.teamId
+
+    Completed games already exist from fetch_player_gamelogs and are skipped
+    by nba_game_id. Future games are inserted with status='scheduled' so the
+    odds fetcher can match them by date + team.
+    """
+    from datetime import date as date_type
+
+    db = SessionLocal()
+    try:
+        print(f"  Fetching full season schedule ({season})...")
+        data = nba_get(
+            "https://stats.nba.com/stats/scheduleleaguev2",
+            {"LeagueID": "00", "Season": season},
+        )
+
+        league_schedule = data.get("leagueSchedule", {})
+        game_dates      = league_schedule.get("gameDates", [])
+        print(f"  ✓ {len(game_dates)} game dates in schedule")
+
+        # Build set of already-stored nba_game_ids to avoid duplicates
+        existing_ids = {g.nba_game_id for g in db.query(Game.nba_game_id).all()}
+
+        # Build set of valid team IDs so we skip preseason/international games
+        # that have fake team IDs (e.g. 15016, 50013) not in our teams table
+        valid_team_ids = {t.id for t in db.query(Team).all()}
+
+        added   = 0
+        skipped = 0
+
+        for game_date_entry in game_dates:
+            # gameDate format: "10/02/2025 00:00:00" → convert to YYYY-MM-DD
+            raw_date = game_date_entry.get("gameDate", "")
+            try:
+                from datetime import datetime
+                game_date = datetime.strptime(raw_date[:10], "%m/%d/%Y").strftime("%Y-%m-%d")
+            except Exception:
+                game_date = raw_date[:10]
+
+            for game in game_date_entry.get("games", []):
+                nba_game_id  = str(game.get("gameId", ""))
+                home_team_id = safe_int(game.get("homeTeam", {}).get("teamId"))
+                away_team_id = safe_int(game.get("awayTeam", {}).get("teamId"))
+
+                if not nba_game_id or not home_team_id or not away_team_id:
+                    continue
+
+                # Skip preseason/international games with non-NBA team IDs
+                if home_team_id not in valid_team_ids or away_team_id not in valid_team_ids:
+                    continue
+
+                if nba_game_id in existing_ids:
+                    skipped += 1
+                    continue
+
+                status_text = str(game.get("gameStatusText", "")).strip()
+                status      = "final" if "Final" in status_text else "scheduled"
+
+                db.add(Game(
+                    nba_game_id  = nba_game_id,
+                    date         = game_date,
+                    home_team_id = home_team_id,
+                    away_team_id = away_team_id,
+                    home_score   = None,
+                    away_score   = None,
+                    status       = status,
+                ))
+                added += 1
+
+                if added % 200 == 0:
+                    db.commit()
+                    print(f"  Inserted {added} schedule games...")
+
+        db.commit()
+        print(f"  ✓ Schedule: {added} new games inserted, {skipped} already existed")
+
+        upcoming = db.query(Game).filter(
+            Game.date   >= date_type.today(),
+            Game.status == "scheduled",
+        ).count()
+        print(f"  ✓ Upcoming scheduled games in DB: {upcoming}")
+        time.sleep(1)
+
+    except Exception as e:
+        db.rollback()
+        print(f"  ✗ Error fetching schedule: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -605,24 +706,32 @@ if __name__ == "__main__":
     print(f"  NBA Data Fetcher — {season}")
     print("=" * 55)
 
-    print("\n[1/6] Seeding teams...")
+    print("\n[1/7] Seeding teams...")
     seed_teams()
 
-    print(f"\n[2/6] Team stats: pace, ratings, PPG, opp PPG...")
+    print(f"\n[2/7] Team stats: pace, ratings, PPG, opp PPG...")
     fetch_team_stats(season=season)
 
-    print(f"\n[3/6] Standings: W/L records...")
+    print(f"\n[3/7] Standings: W/L records...")
     fetch_standings(season=season)
 
-    print(f"\n[4/6] Players: position + jersey from rosters...")
+    print(f"\n[4/7] Players: position + jersey from rosters...")
     seed_players_with_details(season=season)
 
-    print(f"\n[5/6] Defensive stats by position (PTS/AST/REB/STL/BLK + ranks)...")
+    print(f"\n[5/7] Defensive stats by position (PTS/AST/REB/STL/BLK + ranks)...")
     fetch_defensive_stats_by_position(season=season)
 
-    print(f"\n[6/6] Game logs + real scores + usage rate...")
+    print(f"\n[6/7] Game logs + real scores + usage rate...")
     fetch_player_gamelogs(season=season)
+
+    print(f"\n[7/7] Full season schedule (future games for odds matching)...")
+    fetch_schedule(season=season)
 
     print("\n" + "=" * 55)
     print("  Done! Run python db_check.py to verify.")
     print("=" * 55)
+
+
+# ── Quick schedule-only runner ────────────────────────────────────────────────
+# Run this to add future games without re-fetching all stats:
+#   python -c "from app.services.nba_fetcher import fetch_schedule; fetch_schedule()"
