@@ -118,6 +118,12 @@ export interface Edge {
   matchup_grade?: string
   def_rank?: number
   confidence?: number
+  expected_value?: number  // EV for the recommended bet
+  over_ev?: number         // EV for OVER bet
+  under_ev?: number        // EV for UNDER bet
+  no_vig_fair_over?: number   // Fair odds probability for OVER (no vig)
+  no_vig_fair_under?: number  // Fair odds probability for UNDER (no vig)
+  vig_percent?: number        // Sportsbook vig/juice percentage
   streak?: {
     current_streak: number
     streak_type: 'hit' | 'miss'

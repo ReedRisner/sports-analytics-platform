@@ -7,8 +7,14 @@ import type { Edge } from '@/api/types'
  * Dashboard - Best Bets of the Day
  */
 export default function Dashboard() {
-  // Fetch ALL stat types (not just points) with minimum 3% edge
-  const { data: edgesResponse, isLoading, error } = useEdgeFinder(undefined, undefined, 3.0)
+  // Fetch FanDuel lines only with minimum 3% edge
+  // Force FanDuel to keep it simple and fast
+  const { data: edgesResponse, isLoading, error } = useEdgeFinder(
+    undefined,        // stat_type: all
+    'fanduel',        // sportsbook: FanDuel only
+    3.0,              // min_edge: 3%
+    undefined         // position: all
+  )
 
   // Extract edges array from response (backend returns { edges: [...] })
   const edges: Edge[] = Array.isArray(edgesResponse) 

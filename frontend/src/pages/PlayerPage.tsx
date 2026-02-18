@@ -259,7 +259,7 @@ export default function PlayerPage() {
                   </div>
                   {(playerOdds.over_prob !== undefined || playerOdds.under_prob !== undefined) && (
                     <div className="pt-2 border-t border-border/50">
-                      <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div className="grid grid-cols-2 gap-2 text-sm mb-3">
                         {playerOdds.over_prob !== undefined && (
                           <div>
                             <InfoTooltip content={STAT_EXPLANATIONS.over_prob}>
@@ -285,6 +285,47 @@ export default function PlayerPage() {
                           </div>
                         )}
                       </div>
+
+                      {/* Expected Value */}
+                      {playerOdds.expected_value !== undefined && (
+                        <div className="flex items-center justify-between text-sm mb-2 pb-2 border-b border-border/50">
+                          <InfoTooltip content={STAT_EXPLANATIONS.expected_value}>
+                            <span className="text-muted-foreground">Expected Value:</span>
+                          </InfoTooltip>
+                          <span className={`font-mono font-bold ${
+                            playerOdds.expected_value > 0 ? 'text-green-400' :
+                            playerOdds.expected_value < 0 ? 'text-red-400' : ''
+                          }`}>
+                            {playerOdds.expected_value > 0 ? '+' : ''}${playerOdds.expected_value.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* No-Vig Fair Odds */}
+                      {((playerOdds.recommendation === 'OVER' && playerOdds.no_vig_fair_over !== undefined) ||
+                        (playerOdds.recommendation === 'UNDER' && playerOdds.no_vig_fair_under !== undefined)) && (
+                        <div className="flex items-center justify-between text-sm mb-2 pb-2 border-b border-border/50">
+                          <span className="text-muted-foreground">No-Vig Fair Odds:</span>
+                          <span className="font-mono font-bold">
+                            {playerOdds.recommendation === 'OVER' && playerOdds.no_vig_fair_over
+                              ? `${(playerOdds.no_vig_fair_over * 100).toFixed(1)}%`
+                              : playerOdds.recommendation === 'UNDER' && playerOdds.no_vig_fair_under
+                              ? `${(playerOdds.no_vig_fair_under * 100).toFixed(1)}%`
+                              : '—'
+                            }
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Vig Percentage */}
+                      {playerOdds.vig_percent !== undefined && (
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Sportsbook Vig:</span>
+                          <span className="font-mono font-bold text-orange-400">
+                            {playerOdds.vig_percent.toFixed(2)}%
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

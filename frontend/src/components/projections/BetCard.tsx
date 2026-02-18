@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Edge } from '@/api/types'
-import { Star, TrendingUp, TrendingDown } from 'lucide-react'
+import { TrendingUp, TrendingDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STAT_COLORS } from '@/lib/constants'
 
@@ -10,23 +10,10 @@ interface BetCardProps {
 }
 
 /**
- * Calculate star rating (1-5 stars) based on edge percentage
- */
-function getStarRating(edgePct: number): number {
-  const absEdge = Math.abs(edgePct)
-  if (absEdge >= 18) return 5
-  if (absEdge >= 12) return 4
-  if (absEdge >= 8) return 3
-  if (absEdge >= 5) return 2
-  return 1
-}
-
-/**
  * Individual bet card component
  */
 export function BetCard({ edge, rank }: BetCardProps) {
   const navigate = useNavigate()
-  const stars = getStarRating(edge.edge_pct)
   const isOver = edge.recommendation === 'OVER'
   
   const statColor = STAT_COLORS[edge.stat_type.toLowerCase()] || 'text-foreground'
@@ -64,21 +51,6 @@ export function BetCard({ edge, rank }: BetCardProps) {
           {streakCount}x
         </div>
       )}
-
-      {/* Star Rating */}
-      <div className="absolute top-3 right-3 flex gap-0.5">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Star
-            key={i}
-            className={cn(
-              'w-3.5 h-3.5',
-              i < stars
-                ? 'fill-yellow-400 text-yellow-400'
-                : 'fill-gray-700 text-gray-700'
-            )}
-          />
-        ))}
-      </div>
 
       {/* Player Info */}
       <div className="mt-8 mb-4">
@@ -163,6 +135,20 @@ export function BetCard({ edge, rank }: BetCardProps) {
           {winProbPct}%
         </span>
       </div>
+
+      {/* No-Vig Fair Odds */}
+      {((edge.recommendation === 'OVER' && edge.no_vig_fair_over) || 
+        (edge.recommendation === 'UNDER' && edge.no_vig_fair_under)) && (
+        <div className="flex items-center justify-between text-sm mb-2">
+          <span className="text-muted-foreground">No-Vig Fair</span>
+          <span className="font-mono font-semibold">
+            {edge.recommendation === 'OVER' 
+              ? `${(edge.no_vig_fair_over! * 100).toFixed(1)}%`
+              : `${(edge.no_vig_fair_under! * 100).toFixed(1)}%`
+            }
+          </span>
+        </div>
+      )}
 
       {/* Matchup Grade */}
       {edge.matchup_grade && (

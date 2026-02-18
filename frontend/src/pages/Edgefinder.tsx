@@ -4,7 +4,7 @@ import { EdgesTable } from '@/components/tables/EdgesTable'
 import { STAT_TYPES, SPORTSBOOKS, POSITIONS } from '@/lib/constants'
 import { Filter, SortAsc, SortDesc } from 'lucide-react'
 
-type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak'
+type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak' | 'no_vig'
 type SortDirection = 'asc' | 'desc'
 
 /**
@@ -13,7 +13,6 @@ type SortDirection = 'asc' | 'desc'
 export default function EdgeFinder() {
   // Filters
   const [statType, setStatType] = useState<string>('')
-  const [sportsbook, setSportsbook] = useState<string>('')
   const [minEdge, setMinEdge] = useState<number>(3.0)
   const [position, setPosition] = useState<string>('')
   
@@ -21,10 +20,10 @@ export default function EdgeFinder() {
   const [sortField, setSortField] = useState<SortField>('edge_pct')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
-  // Fetch edges with filters
+  // Fetch edges with filters - ALWAYS use FanDuel
   const { data: edges, isLoading, error } = useEdgeFinder(
     statType || undefined,
-    sportsbook || undefined,
+    'fanduel',  // Always FanDuel
     minEdge,
     position || undefined
   )
@@ -55,6 +54,15 @@ export default function EdgeFinder() {
         aVal = (a.streak?.streak_type === 'hit') ? a.streak.current_streak : 0
         bVal = (b.streak?.streak_type === 'hit') ? b.streak.current_streak : 0
         break
+      case 'no_vig':
+        // Sort by fair odds probability (for recommended side)
+        aVal = a.recommendation === 'OVER' 
+          ? (a.no_vig_fair_over || 0) 
+          : (a.no_vig_fair_under || 0)
+        bVal = b.recommendation === 'OVER' 
+          ? (b.no_vig_fair_over || 0) 
+          : (b.no_vig_fair_under || 0)
+        break
       default:
         return 0
     }
@@ -75,12 +83,11 @@ export default function EdgeFinder() {
 
   const clearFilters = () => {
     setStatType('')
-    setSportsbook('')
     setMinEdge(3.0)
     setPosition('')
   }
 
-  const hasFilters = statType || sportsbook || minEdge !== 3.0 || position
+  const hasFilters = statType || minEdge !== 3.0 || position
 
   return (
     <div className="space-y-6">
@@ -99,7 +106,7 @@ export default function EdgeFinder() {
           <h2 className="text-lg font-semibold">Filters</h2>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Stat Type Filter */}
           <div>
             <label className="text-sm font-medium mb-2 block">Stat Type</label>
@@ -112,23 +119,6 @@ export default function EdgeFinder() {
               {Object.entries(STAT_TYPES).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Sportsbook Filter */}
-          <div>
-            <label className="text-sm font-medium mb-2 block">Sportsbook</label>
-            <select
-              value={sportsbook}
-              onChange={(e) => setSportsbook(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            >
-              <option value="">All Sportsbooks</option>
-              {SPORTSBOOKS.map((book) => (
-                <option key={book.value} value={book.value}>
-                  {book.label}
                 </option>
               ))}
             </select>
@@ -239,8 +229,22 @@ export default function EdgeFinder() {
               : 'border-border hover:border-primary/50'
           }`}
         >
-          <span className="text-sm">Win Probability</span>
+          <span className="text-sm">Win %</span>
           {sortField === 'over_prob' && (
+            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
+          )}
+        </button>
+
+        <button
+          onClick={() => handleSort('no_vig')}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
+            sortField === 'no_vig'
+              ? 'border-primary bg-primary/10 text-primary'
+              : 'border-border hover:border-primary/50'
+          }`}
+        >
+          <span className="text-sm">⚖️ No-Vig</span>
+          {sortField === 'no_vig' && (
             sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
           )}
         </button>

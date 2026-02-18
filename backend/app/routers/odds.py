@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.player import Player, Team, Game, OddsLine
 from app.services.projection_engine import project_player, STAT_CONFIG
 from app.services.projection_saver import save_projection
+from app.services.streak_calculator import calculate_streak
 
 router = APIRouter(prefix="/odds", tags=["odds"])
 
@@ -18,6 +19,73 @@ def _safe(val, default=0.0):
         return float(val) if val is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _calculate_ev(probability: float, odds: int) -> float:
+    """
+    Calculate Expected Value for a bet.
+    
+    Args:
+        probability: Win probability as decimal (e.g., 0.65 for 65%)
+        odds: American odds (e.g., -110, +150)
+    
+    Returns:
+        EV as dollar amount per $100 bet
+    """
+    if probability <= 0 or probability >= 1:
+        return 0.0
+    
+    # Convert American odds to decimal multiplier
+    if odds >= 0:
+        # Positive odds: profit = (odds / 100) * stake
+        decimal_odds = 1 + (odds / 100)
+    else:
+        # Negative odds: profit = (100 / abs(odds)) * stake
+        decimal_odds = 1 + (100 / abs(odds))
+    
+    # EV = (probability * profit) - (1 - probability) * stake
+    # For $100 bet: profit = (decimal_odds - 1) * 100, stake = 100
+    win_amount = (decimal_odds - 1) * 100
+    lose_amount = 100
+    
+    ev = (probability * win_amount) - ((1 - probability) * lose_amount)
+    return round(ev, 2)
+
+
+def _calculate_no_vig_odds(over_odds: int, under_odds: int) -> dict:
+    """
+    Calculate no-vig (fair) odds by removing the sportsbook's juice/vig.
+    
+    Args:
+        over_odds: American odds for OVER (e.g., -110)
+        under_odds: American odds for UNDER (e.g., -110)
+    
+    Returns:
+        dict with fair_over_prob, fair_under_prob, vig_percent
+    """
+    # Convert American odds to implied probability
+    def american_to_prob(odds: int) -> float:
+        if odds >= 0:
+            return 100 / (odds + 100)
+        else:
+            return abs(odds) / (abs(odds) + 100)
+    
+    over_prob = american_to_prob(over_odds)
+    under_prob = american_to_prob(under_odds)
+    
+    # Total probability > 1.0 indicates vig
+    total_prob = over_prob + under_prob
+    vig_percent = (total_prob - 1.0) * 100
+    
+    # Remove vig by normalizing to 100%
+    fair_over_prob = over_prob / total_prob
+    fair_under_prob = under_prob / total_prob
+    
+    return {
+        "fair_over_prob": round(fair_over_prob, 4),
+        "fair_under_prob": round(fair_under_prob, 4),
+        "vig_percent": round(vig_percent, 2)
+    }
 
 
 def _nearest_game_date(db) -> date | None:
@@ -107,7 +175,7 @@ def todays_odds(
 @router.get("/edge-finder")
 def edge_finder(
     stat_type:    Optional[str] = Query(None),
-    sportsbook:   Optional[str] = Query(None),
+    sportsbook:   Optional[str] = Query('fanduel', description="Sportsbook (default: fanduel)"),
     min_edge_pct: float = Query(3.0, description="Minimum edge % to show"),
     db: Session = Depends(get_db),
 ):
@@ -115,8 +183,7 @@ def edge_finder(
     THE core endpoint. Compares our projections against real sportsbook lines.
     Returns players where our model disagrees with the book by min_edge_pct or more.
     
-    - stat_type: None = all stats (points, rebounds, assists, etc.)
-    - sportsbook: None = defaults to fanduel (single book prevents duplicates)
+    Note: Defaults to FanDuel lines for consistency. Frontend always uses FanDuel.
     """
     today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
@@ -125,26 +192,24 @@ def edge_finder(
     if not game_ids:
         return {"edges": [], "message": "No games or lines found in next 3 days"}
 
-    # Default to fanduel if no sportsbook specified (prevents duplicate player entries)
-    actual_sportsbook = sportsbook or "fanduel"
+    # Build query with optional filters
+    lines_query = db.query(OddsLine).filter(OddsLine.game_id.in_(game_ids))
     
-    # Build query with filters
-    lines_query = db.query(OddsLine).filter(
-        OddsLine.game_id.in_(game_ids),
-        OddsLine.sportsbook == actual_sportsbook  # Always filter by one sportsbook
-    )
-    
-    # Only filter by stat_type if provided (None = all stats)
+    # Only filter by stat_type if provided
     if stat_type:
         lines_query = lines_query.filter(OddsLine.stat_type == stat_type)
+    
+    # Only filter by sportsbook if provided
+    if sportsbook:
+        lines_query = lines_query.filter(OddsLine.sportsbook == sportsbook)
     
     lines = lines_query.all()
 
     if not lines:
         return {
             "edges":   [],
-            "message": f"No {actual_sportsbook} lines found for stat_type={stat_type or 'all'}. "
-                       f"Try running the odds fetcher.",
+            "message": f"No lines found for stat_type={stat_type or 'all'}, sportsbook={sportsbook or 'all'}. "
+                       f"Try running the odds fetcher or check another sportsbook.",
         }
 
     results = []
@@ -163,6 +228,7 @@ def edge_finder(
         )
 
         # Run projection WITH the sportsbook line
+        # Use the line's stat_type (not the filter parameter)
         proj = project_player(
             db          = db,
             player_id   = ol.player_id,
@@ -190,6 +256,29 @@ def edge_finder(
         team = db.query(Team).filter(Team.id == player.team_id).first()
         opp  = db.query(Team).filter(Team.id == opp_team_id).first()
 
+        # Calculate streak for this player/stat/line combination
+        streak = calculate_streak(
+            db=db,
+            player_id=player.id,
+            stat_type=ol.stat_type,
+            line=ol.line,
+            limit=10
+        )
+
+        # Calculate Expected Value for both OVER and UNDER
+        # Probabilities might be decimals (0.65) or percentages (65.0)
+        over_prob_decimal = proj.over_prob if proj.over_prob <= 1 else proj.over_prob / 100
+        under_prob_decimal = proj.under_prob if proj.under_prob <= 1 else proj.under_prob / 100
+        
+        over_ev = _calculate_ev(over_prob_decimal, ol.over_odds or -110)
+        under_ev = _calculate_ev(under_prob_decimal, ol.under_odds or -110)
+        
+        # Use EV of the recommended bet
+        expected_value = over_ev if proj.recommendation == 'OVER' else under_ev
+
+        # Calculate no-vig fair odds
+        no_vig = _calculate_no_vig_odds(ol.over_odds or -110, ol.under_odds or -110)
+
         results.append({
             "player_id":      player.id,
             "player_name":    player.name,
@@ -214,6 +303,13 @@ def edge_finder(
             "std_dev":        proj.std_dev,
             "matchup_grade":  proj.matchup.matchup_grade if proj.matchup else None,
             "def_rank":       proj.matchup.def_rank if proj.matchup else None,
+            "streak":         streak,
+            "expected_value": expected_value,  # EV for recommended bet
+            "over_ev":        over_ev,         # EV for OVER
+            "under_ev":       under_ev,        # EV for UNDER
+            "no_vig_fair_over": no_vig["fair_over_prob"],
+            "no_vig_fair_under": no_vig["fair_under_prob"],
+            "vig_percent": no_vig["vig_percent"],
         })
 
     # Sort by absolute edge descending
@@ -222,10 +318,12 @@ def edge_finder(
     return {
         "date":       str(today),
         "stat_type":  stat_type or "all",
-        "sportsbook": actual_sportsbook,
+        "sportsbook": sportsbook or "all",
         "count":      len(results),
         "edges":      results,
     }
+
+
 # ── GET /odds/player/{player_id} ─────────────────────────────────────────────
 @router.get("/player/{player_id}")
 def player_odds(
@@ -278,6 +376,29 @@ def player_odds(
             line        = ol.line,
         )
 
+        # Calculate EV and no-vig for this line
+        over_ev = None
+        under_ev = None
+        expected_value = None
+        no_vig_fair_over = None
+        no_vig_fair_under = None
+        vig_percent = None
+
+        if proj:
+            # Calculate EV
+            over_prob_decimal = proj.over_prob if proj.over_prob <= 1 else proj.over_prob / 100
+            under_prob_decimal = proj.under_prob if proj.under_prob <= 1 else proj.under_prob / 100
+            
+            over_ev = _calculate_ev(over_prob_decimal, ol.over_odds or -110)
+            under_ev = _calculate_ev(under_prob_decimal, ol.under_odds or -110)
+            expected_value = over_ev if proj.recommendation == 'OVER' else under_ev
+
+            # Calculate no-vig
+            no_vig = _calculate_no_vig_odds(ol.over_odds or -110, ol.under_odds or -110)
+            no_vig_fair_over = no_vig["fair_over_prob"]
+            no_vig_fair_under = no_vig["fair_under_prob"]
+            vig_percent = no_vig["vig_percent"]
+
         result.append({
             "stat_type":      ol.stat_type,
             "sportsbook":     ol.sportsbook,
@@ -287,7 +408,14 @@ def player_odds(
             "projected":      proj.projected if proj else None,
             "edge_pct":       proj.edge_pct if proj else None,
             "over_prob":      proj.over_prob if proj else None,
+            "under_prob":     proj.under_prob if proj else None,
             "recommendation": proj.recommendation if proj else None,
+            "expected_value": expected_value,
+            "over_ev":        over_ev,
+            "under_ev":       under_ev,
+            "no_vig_fair_over": no_vig_fair_over,
+            "no_vig_fair_under": no_vig_fair_under,
+            "vig_percent":    vig_percent,
             "fetched_at":     ol.fetched_at.isoformat() if ol.fetched_at else None,
         })
 
