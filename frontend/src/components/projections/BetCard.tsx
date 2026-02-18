@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Edge } from '@/api/types'
-import { Star } from 'lucide-react'
+import { Star, TrendingUp, TrendingDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STAT_COLORS } from '@/lib/constants'
 
@@ -38,6 +38,11 @@ export function BetCard({ edge, rank }: BetCardProps) {
     ? (winProbability * 100).toFixed(1) 
     : winProbability.toFixed(1)
 
+  // Check for streak data
+  const hasStreak = edge.streak && edge.streak.current_streak >= 3
+  const streakType = edge.streak?.streak_type
+  const streakCount = edge.streak?.current_streak || 0
+
   return (
     <div
       onClick={() => navigate(`/player/${edge.player_id}`)}
@@ -47,6 +52,18 @@ export function BetCard({ edge, rank }: BetCardProps) {
       <div className="absolute top-3 left-3 w-8 h-8 rounded-full bg-primary/20 border border-primary/50 flex items-center justify-center">
         <span className="text-xs font-bold text-primary">#{rank}</span>
       </div>
+
+      {/* Streak Badge (if 3+ streak) */}
+      {hasStreak && (
+        <div className={`absolute top-3 right-3 px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${
+          streakType === 'hit' 
+            ? 'bg-green-500/20 text-green-400 border border-green-500/50' 
+            : 'bg-red-500/20 text-red-400 border border-red-500/50'
+        }`}>
+          {streakType === 'hit' ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          {streakCount}x
+        </div>
+      )}
 
       {/* Star Rating */}
       <div className="absolute top-3 right-3 flex gap-0.5">

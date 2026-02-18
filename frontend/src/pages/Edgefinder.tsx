@@ -4,7 +4,7 @@ import { EdgesTable } from '@/components/tables/EdgesTable'
 import { STAT_TYPES, SPORTSBOOKS, POSITIONS } from '@/lib/constants'
 import { Filter, SortAsc, SortDesc } from 'lucide-react'
 
-type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob'
+type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak'
 type SortDirection = 'asc' | 'desc'
 
 /**
@@ -49,6 +49,11 @@ export default function EdgeFinder() {
       case 'over_prob':
         aVal = a.recommendation === 'OVER' ? a.over_prob : a.under_prob
         bVal = b.recommendation === 'OVER' ? b.over_prob : b.under_prob
+        break
+      case 'streak':
+        // Sort by streak length, only count "hit" streaks
+        aVal = (a.streak?.streak_type === 'hit') ? a.streak.current_streak : 0
+        bVal = (b.streak?.streak_type === 'hit') ? b.streak.current_streak : 0
         break
       default:
         return 0
@@ -208,6 +213,20 @@ export default function EdgeFinder() {
         >
           <span className="text-sm">Projection</span>
           {sortField === 'projected' && (
+            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
+          )}
+        </button>
+
+        <button
+          onClick={() => handleSort('streak')}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
+            sortField === 'streak'
+              ? 'border-primary bg-primary/10 text-primary'
+              : 'border-border hover:border-primary/50'
+          }`}
+        >
+          <span className="text-sm">🔥 Streak</span>
+          {sortField === 'streak' && (
             sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
           )}
         </button>

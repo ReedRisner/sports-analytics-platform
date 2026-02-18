@@ -1,6 +1,9 @@
 import { apiClient } from '../client'
 import type { Player, GameLog } from '../types'
 
+/**
+ * Players API endpoints
+ */
 export const playersAPI = {
   /**
    * Search players by name
@@ -9,10 +12,11 @@ export const playersAPI = {
     const { data } = await apiClient.get('/players', {
       params: {
         search: query,
-        limit: 50,
+        limit: 20,
       },
     })
-    return data
+    // Backend returns { players: [...], count: N }
+    return data.players || []
   },
 
   /**
@@ -31,10 +35,11 @@ export const playersAPI = {
       params: {
         team_id: teamId,
         position,
-        limit: 100,
+        limit: 50,
       },
     })
-    return data
+    // Backend returns { players: [...], count: N }
+    return data.players || []
   },
 
   /**

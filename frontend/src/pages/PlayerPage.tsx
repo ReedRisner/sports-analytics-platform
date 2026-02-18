@@ -321,24 +321,44 @@ export default function PlayerPage() {
 
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Season Average</span>
+              <span className="text-sm text-muted-foreground">
+                <InfoTooltip content={STAT_EXPLANATIONS.season_avg}>
+                  Season Average
+                </InfoTooltip>
+              </span>
               <span className="text-lg font-bold font-mono">{projection.season_avg.toFixed(1)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Last 5 Games</span>
+              <span className="text-sm text-muted-foreground">
+                <InfoTooltip content={STAT_EXPLANATIONS.l5_avg}>
+                  Last 5 Games
+                </InfoTooltip>
+              </span>
               <span className="text-lg font-bold font-mono">{projection.l5_avg.toFixed(1)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Last 10 Games</span>
+              <span className="text-sm text-muted-foreground">
+                <InfoTooltip content={STAT_EXPLANATIONS.l10_avg}>
+                  Last 10 Games
+                </InfoTooltip>
+              </span>
               <span className="text-lg font-bold font-mono">{projection.l10_avg.toFixed(1)}</span>
             </div>
             <div className="pt-3 border-t border-border flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Games Played</span>
+              <span className="text-sm text-muted-foreground">
+                <InfoTooltip content={STAT_EXPLANATIONS.games_played}>
+                  Games Played
+                </InfoTooltip>
+              </span>
               <span className="text-lg font-bold font-mono">{projection.games_played}</span>
             </div>
             {projection.std_dev && (
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Std Deviation</span>
+                <span className="text-sm text-muted-foreground">
+                  <InfoTooltip content={STAT_EXPLANATIONS.std_dev}>
+                    Std Deviation
+                  </InfoTooltip>
+                </span>
                 <span className="text-lg font-bold font-mono">{projection.std_dev.toFixed(2)}</span>
               </div>
             )}
@@ -455,10 +475,22 @@ export default function PlayerPage() {
                 <div className="text-lg font-bold font-mono">{projection.adjustments.opp_strength.toFixed(2)}x</div>
               </div>
             )}
-            {projection.adjustments.is_back_to_back && (
-              <div className="text-center p-3 rounded-lg bg-orange-500/20 border border-orange-500/50">
-                <div className="text-xs text-muted-foreground mb-1">B2B Game</div>
-                <div className="text-lg font-bold text-orange-400">Yes</div>
+            {projection.adjustments.is_back_to_back !== undefined && (
+              <div className={`text-center p-3 rounded-lg ${
+                projection.adjustments.is_back_to_back 
+                  ? 'bg-orange-500/20 border border-orange-500/50'
+                  : 'bg-green-500/10 border border-green-500/30'
+              }`}>
+                <div className="text-xs text-muted-foreground mb-1">
+                  <InfoTooltip content={STAT_EXPLANATIONS.back_to_back}>
+                    B2B Game
+                  </InfoTooltip>
+                </div>
+                <div className={`text-lg font-bold ${
+                  projection.adjustments.is_back_to_back ? 'text-orange-400' : 'text-green-400'
+                }`}>
+                  {projection.adjustments.is_back_to_back ? 'Yes' : 'No'}
+                </div>
               </div>
             )}
           </div>
@@ -553,18 +585,32 @@ export default function PlayerPage() {
                   {monteCarloError instanceof Error ? monteCarloError.message : 'Unknown error occurred'}
                 </div>
                 <div className="text-xs text-red-400/60 font-mono bg-black/20 p-3 rounded mb-3">
-                  Debug info: Player ID {playerId}, Stat: {selectedStat}, Line: {playerOdds?.line}
+                  <div className="font-semibold mb-1">Request Info:</div>
+                  Player ID: {playerId}<br />
+                  Stat: {selectedStat}<br />
+                  Line: {playerOdds?.line}
                 </div>
                 {(monteCarloError as any)?.response?.data?.detail && (
-                  <div className="text-xs text-red-400/80 font-mono bg-black/20 p-3 rounded mb-3 max-h-40 overflow-auto">
-                    <div className="font-semibold mb-2">Backend Error Details:</div>
-                    <pre className="whitespace-pre-wrap">
-                      {JSON.stringify((monteCarloError as any).response.data.detail, null, 2)}
+                  <div className="text-xs text-red-400/80 font-mono bg-black/20 p-3 rounded mb-3 max-h-60 overflow-auto">
+                    <div className="font-semibold mb-2">Backend Response:</div>
+                    <pre className="whitespace-pre-wrap text-xs">
+                      {typeof (monteCarloError as any).response.data.detail === 'string'
+                        ? (monteCarloError as any).response.data.detail
+                        : JSON.stringify((monteCarloError as any).response.data.detail, null, 2)}
                     </pre>
                   </div>
                 )}
+                {(monteCarloError as any)?.response?.status && (
+                  <div className="text-xs text-red-400/60 mb-3">
+                    HTTP Status: {(monteCarloError as any).response.status}
+                  </div>
+                )}
                 <button
-                  onClick={() => setRunMonteCarlo(false)}
+                  onClick={() => {
+                    setRunMonteCarlo(false)
+                    // Wait a bit then allow retry
+                    setTimeout(() => setRunMonteCarlo(false), 100)
+                  }}
                   className="px-4 py-2 rounded-lg border border-red-500/50 text-red-400 hover:bg-red-500/10 text-sm"
                 >
                   Try Again
@@ -593,7 +639,11 @@ export default function PlayerPage() {
                 <div className="space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="rounded-lg border border-border p-4">
-                      <div className="text-sm text-muted-foreground mb-2">Win Probabilities</div>
+                      <div className="text-sm text-muted-foreground mb-2">
+                        <InfoTooltip content="Probability of going over/under the line based on 10,000 simulations. 60%+ is strong, 70%+ is excellent.">
+                          Win Probabilities
+                        </InfoTooltip>
+                      </div>
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="text-xs">Over {monteCarlo.line}</span>
@@ -611,7 +661,11 @@ export default function PlayerPage() {
                     </div>
 
                     <div className="rounded-lg border border-border p-4">
-                      <div className="text-sm text-muted-foreground mb-2">Expected Value</div>
+                      <div className="text-sm text-muted-foreground mb-2">
+                        <InfoTooltip content={STAT_EXPLANATIONS.expected_value}>
+                          Expected Value
+                        </InfoTooltip>
+                      </div>
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <span className="text-xs">Over EV</span>
@@ -633,7 +687,11 @@ export default function PlayerPage() {
                     </div>
 
                     <div className="rounded-lg border border-border p-4">
-                      <div className="text-sm text-muted-foreground mb-2">Kelly Criterion</div>
+                      <div className="text-sm text-muted-foreground mb-2">
+                        <InfoTooltip content={STAT_EXPLANATIONS.kelly_criterion}>
+                          Kelly Criterion
+                        </InfoTooltip>
+                      </div>
                       <div className="text-3xl font-bold font-mono text-primary">
                         {((monteCarlo.monte_carlo?.expected_value?.kelly_fraction || 0) * 100).toFixed(1)}%
                       </div>
@@ -644,7 +702,11 @@ export default function PlayerPage() {
                   </div>
 
                   <div className="rounded-lg border border-border p-4">
-                    <div className="text-sm text-muted-foreground mb-3">Confidence Intervals</div>
+                    <div className="text-sm text-muted-foreground mb-3">
+                      <InfoTooltip content={STAT_EXPLANATIONS.confidence_intervals}>
+                        Confidence Intervals
+                      </InfoTooltip>
+                    </div>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       {monteCarlo.monte_carlo.confidence_intervals && Object.entries(monteCarlo.monte_carlo.confidence_intervals).map(([level, range]) => {
                         const [low, high] = range as [number, number]
@@ -661,7 +723,11 @@ export default function PlayerPage() {
                   </div>
 
                   <div className="rounded-lg border border-border p-4">
-                    <div className="text-sm text-muted-foreground mb-3">Percentiles</div>
+                    <div className="text-sm text-muted-foreground mb-3">
+                      <InfoTooltip content="Shows the distribution of simulated outcomes. 50th = median (most likely result), 90th = optimistic outcome. Helps understand the range of possibilities.">
+                        Percentiles
+                      </InfoTooltip>
+                    </div>
                     <div className="grid grid-cols-5 gap-3">
                       {monteCarlo.monte_carlo.percentiles && Object.entries(monteCarlo.monte_carlo.percentiles).map(([percentile, value]) => (
                         <div key={percentile} className="text-center p-2 rounded bg-muted/50">

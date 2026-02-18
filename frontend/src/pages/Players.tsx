@@ -14,8 +14,8 @@ export default function Players() {
   // Fetch players based on search query
   const { data: players, isLoading } = useQuery({
     queryKey: ['players-search', searchQuery],
-    queryFn: () => searchQuery ? playersAPI.search(searchQuery) : playersAPI.list(),
-    enabled: searchQuery.length >= 2 || searchQuery.length === 0,
+    queryFn: () => playersAPI.search(searchQuery),
+    enabled: searchQuery.length >= 2, // Only search when 2+ characters
   })
 
   return (
@@ -100,12 +100,15 @@ export default function Players() {
         </div>
       )}
 
-      {/* Initial State */}
-      {!isLoading && !searchQuery && (!players || players.length === 0) && (
-        <div className="text-center py-12">
-          <Search className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-          <p className="text-muted-foreground">
-            Start typing to search for players
+      {/* Initial State - Just search prompt */}
+      {!searchQuery && (
+        <div className="text-center py-20">
+          <Search className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+          <p className="text-lg text-muted-foreground mb-2">
+            Search for any NBA player
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Start typing a name in the search bar above
           </p>
         </div>
       )}

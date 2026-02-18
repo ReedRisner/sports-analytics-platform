@@ -118,6 +118,12 @@ export interface Edge {
   matchup_grade?: string
   def_rank?: number
   confidence?: number
+  streak?: {
+    current_streak: number
+    streak_type: 'hit' | 'miss'
+    last_n_games: boolean[]
+    hit_rate: number
+  }
 }
 
 /**
