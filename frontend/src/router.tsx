@@ -8,7 +8,7 @@ const EdgeFinder = lazy(() => import('./pages/Edgefinder'))
 const PlayerPage = lazy(() => import('./pages/PlayerPage'))
 const Players = lazy(() => import('./pages/Players'))
 const MatchupRankings = lazy(() => import('./pages/MatchupRankings'))
-const Login = lazy(() => import('./pages/Login'))
+const AuthPage = lazy(() => import('./pages/AuthPage'))
 const Pricing = lazy(() => import('./pages/Pricing'))
 
 // Loading fallback
@@ -22,7 +22,7 @@ export function AppRouter() {
   return (
     <Suspense fallback={<LoadingFallback />}>
       <Routes>
-        <Route path="/login" element={<Login />} />
+        <Route path="/login" element={<AuthPage />} />
         <Route path="/" element={<PageLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="edges" element={<EdgeFinder />} />
@@ -31,6 +31,8 @@ export function AppRouter() {
           <Route path="matchups" element={<MatchupRankings />} />
           <Route path="pricing" element={<Pricing />} />
           <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/auth" element={<AuthPage />} />
+          
         </Route>
       </Routes>
     </Suspense>

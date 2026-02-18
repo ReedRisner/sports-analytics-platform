@@ -5,12 +5,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from fastapi.middleware.cors import CORSMiddleware
 import pytz
 
 from app.database import engine, Base
 from app.models import player  # ensures all tables are created
 
-from app.routers import players, games, projections, odds
+from app.routers import players, games, projections, odds, auth
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,6 +100,18 @@ app.include_router(players.router)
 app.include_router(games.router)
 app.include_router(projections.router)
 app.include_router(odds.router)
+app.include_router(auth.router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -110,3 +124,4 @@ def health_check():
             "jobs":    [j.name for j in scheduler.get_jobs()],
         }
     }
+

@@ -215,7 +215,12 @@ def calculate_injury_impact_factor(
         # Check injury status
         status = None
         for inj in injuries:
-            if _name_similarity(teammate.name, inj.get('Player Name', '')) >= 0.85:
+            if isinstance(inj, dict):
+                player_name = inj.get("Player Name", "")
+            else:
+                continue
+
+            if _name_similarity(teammate.name, player_name) >= 0.85:
                 status = inj.get('Current Status')
                 break
         
