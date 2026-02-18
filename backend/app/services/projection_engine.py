@@ -251,21 +251,45 @@ def _home_away_factor(db: Session, player: Player, game_id: int) -> float:
     return HOME_FACTOR if game.home_team_id == player.team_id else 1.0
 
 
-def _rest_factor(db: Session, player: Player) -> float:
-    recent_games = (
+def _rest_factor(db: Session, player: Player, game_date: Optional[date] = None) -> tuple[float, bool]:
+    """
+    Calculate rest factor for a player.
+    
+    A player is on a back-to-back if they played YESTERDAY and are playing TODAY.
+    
+    Returns: (rest_factor, is_back_to_back)
+    """
+    from datetime import date as date_type, timedelta
+    
+    # Use provided game_date or today
+    if game_date is None:
+        game_date = date_type.today()
+    
+    # Find player's most recent completed game BEFORE this game
+    previous_game = (
         db.query(Game)
         .filter(
             ((Game.home_team_id == player.team_id) | (Game.away_team_id == player.team_id)),
-            Game.home_score != None,
+            Game.home_score != None,  # Only completed games
+            Game.date < game_date,     # Before today's game
         )
         .order_by(desc(Game.date))
-        .limit(2)
-        .all()
+        .first()
     )
-    if len(recent_games) < 2:
-        return 1.0
-    days_rest = (recent_games[0].date - recent_games[1].date).days
-    return B2B_FACTOR if days_rest == 1 else 1.0
+    
+    if not previous_game:
+        # No previous game found - not a back-to-back
+        return 1.0, False
+    
+    # Calculate days since last game
+    days_since_last = (game_date - previous_game.date).days
+    
+    if days_since_last == 1:
+        # Played yesterday, playing today = back-to-back
+        return B2B_FACTOR, True
+    else:
+        # Had rest days
+        return 1.0, False
 
 
 def _blowout_factor_vegas(db: Session, player: Player, opp_team_id: int, game_id: Optional[int]) -> float:
@@ -448,6 +472,7 @@ def project_player(
     line:        Optional[float] = None,
     min_minutes: float           = MIN_THRESHOLD,
     game_id:     Optional[int]   = None,
+    game_date:   Optional[date]  = None,
 ) -> Optional[Projection]:
     """
     Full projection for one player + stat type.
@@ -493,6 +518,7 @@ def project_player(
     injury_factor  = 1.0
     form_factor    = 1.0
     opp_strength   = 1.0
+    is_back_to_back = False
 
     if opp_team_id:
         matchup = get_matchup_context(db, player, opp_team_id, stat_type)
@@ -517,7 +543,7 @@ def project_player(
                 game_id = upcoming.id
 
         home_factor    = _home_away_factor(db, player, game_id)
-        rest_factor    = _rest_factor(db, player)
+        rest_factor, is_back_to_back = _rest_factor(db, player, game_date=game_date if 'game_date' in locals() else None)
         blowout_factor = _blowout_factor_vegas(db, player, opp_team_id, game_id)
         
         from datetime import date as date_type
@@ -578,7 +604,7 @@ def project_player(
         injury_factor   = round(injury_factor, 3),
         form_factor     = round(form_factor, 3),
         opp_strength    = round(opp_strength, 3),
-        is_back_to_back = (rest_factor < 1.0),
+        is_back_to_back = is_back_to_back,
         line         = line,
         edge_pct     = round(edge_pct, 2)         if edge_pct   is not None else None,
         over_prob    = round(over_prob * 100, 1)   if over_prob  is not None else None,

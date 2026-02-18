@@ -5,6 +5,8 @@ import { apiClient } from '@/api/client'
 import { STAT_TYPES } from '@/lib/constants'
 import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap } from 'lucide-react'
 import GameLogChart from '@/components/projections/GameLogChart'
+import { InfoTooltip } from '@/components/ui/InfoTooltip'
+import { STAT_EXPLANATIONS } from '@/lib/stat-explanations'
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>()
@@ -240,14 +242,18 @@ export default function PlayerPage() {
                       playerOdds.recommendation === 'OVER' ? 'text-green-400' :
                       playerOdds.recommendation === 'UNDER' ? 'text-red-400' : 'text-gray-400'
                     }`}>
-                      {playerOdds.recommendation}
+                      <InfoTooltip content={STAT_EXPLANATIONS.recommendation}>
+                        {playerOdds.recommendation}
+                      </InfoTooltip>
                     </div>
                     {playerOdds.edge_pct !== undefined && (
                       <div className={`text-2xl font-bold font-mono ${
                         playerOdds.recommendation === 'OVER' ? 'text-green-400' :
                         playerOdds.recommendation === 'UNDER' ? 'text-red-400' : 'text-gray-400'
                       }`}>
-                        {playerOdds.edge_pct > 0 ? '+' : ''}{playerOdds.edge_pct.toFixed(1)}%
+                        <InfoTooltip content={STAT_EXPLANATIONS.edge}>
+                          {playerOdds.edge_pct > 0 ? '+' : ''}{playerOdds.edge_pct.toFixed(1)}%
+                        </InfoTooltip>
                       </div>
                     )}
                   </div>
@@ -256,7 +262,9 @@ export default function PlayerPage() {
                       <div className="grid grid-cols-2 gap-2 text-sm">
                         {playerOdds.over_prob !== undefined && (
                           <div>
-                            <span className="text-muted-foreground">Over Win %: </span>
+                            <InfoTooltip content={STAT_EXPLANATIONS.over_prob}>
+                              <span className="text-muted-foreground">Over Win %: </span>
+                            </InfoTooltip>
                             <span className="font-mono font-bold text-green-400">
                               {playerOdds.over_prob > 1 
                                 ? playerOdds.over_prob.toFixed(1) 
@@ -266,7 +274,9 @@ export default function PlayerPage() {
                         )}
                         {playerOdds.under_prob !== undefined && (
                           <div>
-                            <span className="text-muted-foreground">Under Win %: </span>
+                            <InfoTooltip content={STAT_EXPLANATIONS.under_prob}>
+                              <span className="text-muted-foreground">Under Win %: </span>
+                            </InfoTooltip>
                             <span className="font-mono font-bold text-red-400">
                               {playerOdds.under_prob > 1 
                                 ? playerOdds.under_prob.toFixed(1) 
@@ -503,6 +513,7 @@ export default function PlayerPage() {
           line={playerOdds?.line}
           filter={gameLogFilter}
           opponentAbbr={projection?.matchup?.opp_abbr}
+          nextGameProjection={projection?.projected}
         />
       </div>
 
