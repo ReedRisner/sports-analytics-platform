@@ -3,8 +3,8 @@ import { Suspense, lazy } from 'react'
 import { PageLayout } from './components/layout/PageLayout'
 
 // Lazy load pages for code splitting
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const EdgeFinder = lazy(() => import('./pages/EdgeFinder'))
+const Dashboard = lazy(() => import('./pages/dashboard'))
+const EdgeFinder = lazy(() => import('./pages/Edgefinder'))
 const PlayerPage = lazy(() => import('./pages/PlayerPage'))
 const MatchupRankings = lazy(() => import('./pages/MatchupRankings'))
 const Login = lazy(() => import('./pages/Login'))
