@@ -20,10 +20,8 @@ export default function Dashboard() {
     <div className="space-y-10 pb-12">
       {/* Sleek Header */}
       <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-background p-8">
-        {/* Glow effect */}
         <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-transparent to-primary/20 blur-2xl" />
         
-        {/* Content */}
         <div className="relative">
           <div className="flex items-center justify-between mb-2">
             <h1 className="text-5xl font-black tracking-tight bg-gradient-to-r from-black via-black to-black/60 bg-clip-text text-transparent">
@@ -45,7 +43,6 @@ export default function Dashboard() {
             </div>
           </div>
           
-          {/* Stats bar */}
           <div className="flex items-center gap-6 mt-4">
             <div className="flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-green-400" />

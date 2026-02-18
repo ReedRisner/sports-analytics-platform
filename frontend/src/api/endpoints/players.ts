@@ -1,59 +1,66 @@
 import { apiClient } from '../client'
-import type { Edge, OddsLine } from '../types'
+import type { Player, GameLog } from '../types'
 
-/**
- * Odds API endpoints
- */
-export const oddsAPI = {
+export const playersAPI = {
   /**
-   * Get edge finder results with filters
+   * Search players by name
    */
-  getEdgeFinder: async (
-    statType?: string,
-    sportsbook?: string,
-    minEdgePct: number = 3.0,
-    position?: string
-  ): Promise<Edge[]> => {
-    const { data } = await apiClient.get('/odds/edge-finder', {
+  search: async (query: string): Promise<Player[]> => {
+    const { data } = await apiClient.get('/players', {
       params: {
-        stat_type: statType,
-        sportsbook,
-        min_edge_pct: minEdgePct,
+        search: query,
+        limit: 50,
+      },
+    })
+    return data
+  },
+
+  /**
+   * Get player profile with details
+   */
+  getProfile: async (playerId: number): Promise<Player> => {
+    const { data } = await apiClient.get(`/players/${playerId}/profile`)
+    return data
+  },
+
+  /**
+   * List players with optional filters
+   */
+  list: async (teamId?: number, position?: string): Promise<Player[]> => {
+    const { data } = await apiClient.get('/players', {
+      params: {
+        team_id: teamId,
         position,
+        limit: 100,
       },
     })
     return data
   },
 
   /**
-   * Get all odds lines for today
+   * Get player's game log
    */
-  getTodayOdds: async (
-    statType?: string,
-    sportsbook?: string
-  ): Promise<OddsLine[]> => {
-    const { data } = await apiClient.get('/odds/today', {
+  getGameLog: async (
+    playerId: number,
+    last?: number
+  ): Promise<GameLog[]> => {
+    const { data } = await apiClient.get(`/players/${playerId}/game-log`, {
+      params: {
+        last,
+      },
+    })
+    return data
+  },
+
+  /**
+   * Get player stats summary
+   */
+  getStats: async (playerId: number, statType?: string) => {
+    const { data } = await apiClient.get(`/players/${playerId}/stats`, {
       params: {
         stat_type: statType,
-        sportsbook,
       },
     })
-    return data
-  },
-
-  /**
-   * Get odds for specific player
-   */
-  getPlayerOdds: async (playerId: number): Promise<OddsLine[]> => {
-    const { data } = await apiClient.get(`/odds/player/${playerId}`)
-    return data
-  },
-
-  /**
-   * Get line movement history for a specific odds line
-   */
-  getLineMovement: async (oddsLineId: number) => {
-    const { data } = await apiClient.get(`/odds/line-movement/${oddsLineId}`)
     return data
   },
 }

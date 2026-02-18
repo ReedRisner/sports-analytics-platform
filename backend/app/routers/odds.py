@@ -106,14 +106,17 @@ def todays_odds(
 # ── GET /odds/edge-finder ─────────────────────────────────────────────────────
 @router.get("/edge-finder")
 def edge_finder(
-    stat_type:    str   = Query("points"),
-    sportsbook:   str   = Query("fanduel"),
+    stat_type:    Optional[str] = Query(None),
+    sportsbook:   Optional[str] = Query(None),
     min_edge_pct: float = Query(3.0, description="Minimum edge % to show"),
     db: Session = Depends(get_db),
 ):
     """
     THE core endpoint. Compares our projections against real sportsbook lines.
     Returns players where our model disagrees with the book by min_edge_pct or more.
+    
+    - stat_type: None = all stats (points, rebounds, assists, etc.)
+    - sportsbook: None = defaults to fanduel (single book prevents duplicates)
     """
     today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
@@ -122,18 +125,26 @@ def edge_finder(
     if not game_ids:
         return {"edges": [], "message": "No games or lines found in next 3 days"}
 
-    # Get all lines for today matching filters
-    lines = db.query(OddsLine).filter(
+    # Default to fanduel if no sportsbook specified (prevents duplicate player entries)
+    actual_sportsbook = sportsbook or "fanduel"
+    
+    # Build query with filters
+    lines_query = db.query(OddsLine).filter(
         OddsLine.game_id.in_(game_ids),
-        OddsLine.stat_type  == stat_type,
-        OddsLine.sportsbook == sportsbook,
-    ).all()
+        OddsLine.sportsbook == actual_sportsbook  # Always filter by one sportsbook
+    )
+    
+    # Only filter by stat_type if provided (None = all stats)
+    if stat_type:
+        lines_query = lines_query.filter(OddsLine.stat_type == stat_type)
+    
+    lines = lines_query.all()
 
     if not lines:
         return {
             "edges":   [],
-            "message": f"No {sportsbook} lines found for {stat_type} today. "
-                       f"Try running the odds fetcher or check another sportsbook.",
+            "message": f"No {actual_sportsbook} lines found for stat_type={stat_type or 'all'}. "
+                       f"Try running the odds fetcher.",
         }
 
     results = []
@@ -155,7 +166,7 @@ def edge_finder(
         proj = project_player(
             db          = db,
             player_id   = ol.player_id,
-            stat_type   = stat_type,
+            stat_type   = ol.stat_type,
             opp_team_id = opp_team_id,
             line        = ol.line,
         )
@@ -169,7 +180,7 @@ def edge_finder(
             game_id=ol.game_id,
             opp_team_id=opp_team_id,
             line=ol.line,
-            sportsbook=sportsbook,
+            sportsbook=ol.sportsbook,
         )
 
         # Only include if edge is meaningful
@@ -185,8 +196,8 @@ def edge_finder(
             "team_abbr":      team.abbreviation if team else "?",
             "opp_abbr":       opp.abbreviation if opp else "?",
             "position":       player.position,
-            "stat_type":      stat_type,
-            "sportsbook":     sportsbook,
+            "stat_type":      ol.stat_type,
+            "sportsbook":     ol.sportsbook,
             "line":           ol.line,
             "over_odds":      ol.over_odds,
             "under_odds":     ol.under_odds,
@@ -210,13 +221,11 @@ def edge_finder(
 
     return {
         "date":       str(today),
-        "stat_type":  stat_type,
-        "sportsbook": sportsbook,
+        "stat_type":  stat_type or "all",
+        "sportsbook": actual_sportsbook,
         "count":      len(results),
         "edges":      results,
     }
-
-
 # ── GET /odds/player/{player_id} ─────────────────────────────────────────────
 @router.get("/player/{player_id}")
 def player_odds(
