@@ -38,6 +38,11 @@ uvicorn app.main:app --reload
 Keep this running in its own PowerShell window.
 Test it: open http://localhost:8000/health in Chrome
 
+
+cd C:\Users\reedl\OneDrive\Documents\sports-analytics-platform\frontend
+npm run dev
+http://localhost:5173/
+
 ---
 
 ## RUN THE DATA FETCHER
