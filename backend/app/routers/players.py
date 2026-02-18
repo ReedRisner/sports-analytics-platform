@@ -271,6 +271,66 @@ def player_all_projections(
         "projections": projections,
     }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ADD THIS TO YOUR backend/app/routers/players.py
+# Place it AFTER the player_all_projections function
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── GET /players/{player_id}/game-log ────────────────────────────────────────
+@router.get("/{player_id}/game-log")
+def player_game_log(
+    player_id: int,
+    last: int = Query(20, ge=1, le=82, description="Number of recent games"),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns recent game logs for a player.
+    Used by the frontend GameLogChart component.
+    """
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    # Query recent games
+    recent_rows = (
+        db.query(PlayerGameStats, Game)
+        .join(Game, PlayerGameStats.game_id == Game.id)
+        .filter(PlayerGameStats.player_id == player_id)
+        .order_by(desc(Game.date))
+        .limit(last)
+        .all()
+    )
+
+    game_log = []
+    for stat, game in recent_rows:
+        # Determine opponent
+        home = db.query(Team).filter(Team.id == game.home_team_id).first()
+        away = db.query(Team).filter(Team.id == game.away_team_id).first()
+        is_home = game.home_team_id == player.team_id
+        opp = away if is_home else home
+
+        # Determine result
+        if game.home_score is not None and game.away_score is not None:
+            my_score = game.home_score if is_home else game.away_score
+            opp_score = game.away_score if is_home else game.home_score
+            result = "W" if my_score > opp_score else "L"
+        else:
+            result = "—"
+
+        game_log.append({
+            "game_id": game.id,
+            "date": str(game.date),
+            "opponent": opp.abbreviation if opp else "?",
+            "points": stat.points or 0,
+            "rebounds": stat.rebounds or 0,
+            "assists": stat.assists or 0,
+            "steals": stat.steals or 0,
+            "blocks": stat.blocks or 0,
+            "minutes": round(_safe(stat.minutes), 1),
+            "result": result
+        })
+
+    return game_log
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _game_result(game: Game, team_id: int) -> str:

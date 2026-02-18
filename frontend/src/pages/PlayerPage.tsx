@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { STAT_TYPES } from '@/lib/constants'
 import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap } from 'lucide-react'
+import GameLogChart from '@/components/projections/GameLogChart'
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>()
@@ -11,7 +12,7 @@ export default function PlayerPage() {
   const navigate = useNavigate()
   
   const [selectedStat, setSelectedStat] = useState<string>('points')
-  const [gameLogFilter, setGameLogFilter] = useState<'l5' | 'l10' | 'season'>('l10')
+  const [gameLogFilter, setGameLogFilter] = useState<'l5' | 'l10' | 'vs_opp'>('l10')
   const [runMonteCarlo, setRunMonteCarlo] = useState(false) // Manual trigger
 
   // Fetch player projection from /projections/today
@@ -454,6 +455,57 @@ export default function PlayerPage() {
         </div>
       )}
 
+      {/* Game Log Chart */}
+      <div className="rounded-xl border border-border bg-card p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-bold">Performance History</h2>
+          
+          {/* Filter Buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setGameLogFilter('l5')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                gameLogFilter === 'l5'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              }`}
+            >
+              Last 5
+            </button>
+            <button
+              onClick={() => setGameLogFilter('l10')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                gameLogFilter === 'l10'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              }`}
+            >
+              Last 10
+            </button>
+            {projection?.matchup?.opp_abbr && (
+              <button
+                onClick={() => setGameLogFilter('vs_opp')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  gameLogFilter === 'vs_opp'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                vs {projection.matchup.opp_abbr}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <GameLogChart 
+          games={gameLog || []}
+          statType={selectedStat as any}
+          line={playerOdds?.line}
+          filter={gameLogFilter}
+          opponentAbbr={projection?.matchup?.opp_abbr}
+        />
+      </div>
+
       {/* Monte Carlo Simulation */}
       {playerOdds?.line && (
         <div className="rounded-xl border border-border bg-card p-6">
@@ -526,119 +578,92 @@ export default function PlayerPage() {
                     {JSON.stringify(monteCarlo, null, 2)}
                   </pre>
                 </div>
-          ) : (
-          <div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-              <div className="rounded-lg border border-border p-4">
-                <div className="text-sm text-muted-foreground mb-2">Win Probabilities</div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs">Over {monteCarlo.line}</span>
-                    <span className="font-mono font-bold text-green-400">
-                      {(monteCarlo.monte_carlo.over_probability * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs">Under {monteCarlo.line}</span>
-                    <span className="font-mono font-bold text-red-400">
-                      {(monteCarlo.monte_carlo.under_probability * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border p-4">
-                <div className="text-sm text-muted-foreground mb-2">Expected Value</div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs">Over EV</span>
-                    <span className={`font-mono font-bold ${monteCarlo.monte_carlo?.expected_value?.over_ev > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {monteCarlo.monte_carlo?.expected_value?.over_ev > 0 ? '+' : ''}{monteCarlo.monte_carlo?.expected_value?.over_ev?.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs">Under EV</span>
-                    <span className={`font-mono font-bold ${monteCarlo.monte_carlo?.expected_value?.under_ev > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {monteCarlo.monte_carlo?.expected_value?.under_ev > 0 ? '+' : ''}{monteCarlo.monte_carlo?.expected_value?.under_ev?.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="pt-2 border-t border-border">
-                    <div className="text-xs text-muted-foreground">Best Bet</div>
-                    <div className="text-lg font-bold text-primary uppercase">{monteCarlo.monte_carlo?.expected_value?.best_bet}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border p-4">
-                <div className="text-sm text-muted-foreground mb-2">Kelly Criterion</div>
-                <div className="text-3xl font-bold font-mono text-primary">
-                  {((monteCarlo.monte_carlo?.expected_value?.kelly_fraction || 0) * 100).toFixed(1)}%
-                </div>
-                <div className="text-xs text-muted-foreground mt-2">
-                  Suggested bankroll %
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border p-4">
-              <div className="text-sm text-muted-foreground mb-3">Confidence Intervals</div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {monteCarlo.monte_carlo.confidence_intervals && Object.entries(monteCarlo.monte_carlo.confidence_intervals).map(([level, range]) => {
-                  const [low, high] = range as [number, number]
-                  return (
-                    <div key={level} className="text-center p-2 rounded bg-muted/50">
-                      <div className="text-xs text-muted-foreground mb-1">{level}</div>
-                      <div className="text-sm font-mono">
-                        {low.toFixed(1)} - {high.toFixed(1)}
+              ) : (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="rounded-lg border border-border p-4">
+                      <div className="text-sm text-muted-foreground mb-2">Win Probabilities</div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs">Over {monteCarlo.line}</span>
+                          <span className="font-mono font-bold text-green-400">
+                            {(monteCarlo.monte_carlo.over_probability * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs">Under {monteCarlo.line}</span>
+                          <span className="font-mono font-bold text-red-400">
+                            {(monteCarlo.monte_carlo.under_probability * 100).toFixed(1)}%
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  )
-                })}
-              </div>
-            </div>
 
-            <div className="rounded-lg border border-border p-4 mt-4">
-              <div className="text-sm text-muted-foreground mb-3">Percentiles</div>
-              <div className="grid grid-cols-5 gap-3">
-                {monteCarlo.monte_carlo.percentiles && Object.entries(monteCarlo.monte_carlo.percentiles).map(([percentile, value]) => (
-                  <div key={percentile} className="text-center p-2 rounded bg-muted/50">
-                    <div className="text-xs text-muted-foreground mb-1">{percentile}th</div>
-                    <div className="text-lg font-mono font-bold">{(value as number).toFixed(1)}</div>
+                    <div className="rounded-lg border border-border p-4">
+                      <div className="text-sm text-muted-foreground mb-2">Expected Value</div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs">Over EV</span>
+                          <span className={`font-mono font-bold ${monteCarlo.monte_carlo?.expected_value?.over_ev > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {monteCarlo.monte_carlo?.expected_value?.over_ev > 0 ? '+' : ''}{monteCarlo.monte_carlo?.expected_value?.over_ev?.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs">Under EV</span>
+                          <span className={`font-mono font-bold ${monteCarlo.monte_carlo?.expected_value?.under_ev > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {monteCarlo.monte_carlo?.expected_value?.under_ev > 0 ? '+' : ''}{monteCarlo.monte_carlo?.expected_value?.under_ev?.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="pt-2 border-t border-border">
+                          <div className="text-xs text-muted-foreground">Best Bet</div>
+                          <div className="text-lg font-bold text-primary uppercase">{monteCarlo.monte_carlo?.expected_value?.best_bet}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border p-4">
+                      <div className="text-sm text-muted-foreground mb-2">Kelly Criterion</div>
+                      <div className="text-3xl font-bold font-mono text-primary">
+                        {((monteCarlo.monte_carlo?.expected_value?.kelly_fraction || 0) * 100).toFixed(1)}%
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-2">
+                        Suggested bankroll %
+                      </div>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
-          </div>
-          )}
+
+                  <div className="rounded-lg border border-border p-4">
+                    <div className="text-sm text-muted-foreground mb-3">Confidence Intervals</div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {monteCarlo.monte_carlo.confidence_intervals && Object.entries(monteCarlo.monte_carlo.confidence_intervals).map(([level, range]) => {
+                        const [low, high] = range as [number, number]
+                        return (
+                          <div key={level} className="text-center p-2 rounded bg-muted/50">
+                            <div className="text-xs text-muted-foreground mb-1">{level}</div>
+                            <div className="text-sm font-mono">
+                              {low.toFixed(1)} - {high.toFixed(1)}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border p-4">
+                    <div className="text-sm text-muted-foreground mb-3">Percentiles</div>
+                    <div className="grid grid-cols-5 gap-3">
+                      {monteCarlo.monte_carlo.percentiles && Object.entries(monteCarlo.monte_carlo.percentiles).map(([percentile, value]) => (
+                        <div key={percentile} className="text-center p-2 rounded bg-muted/50">
+                          <div className="text-xs text-muted-foreground mb-1">{percentile}th</div>
+                          <div className="text-lg font-mono font-bold">{(value as number).toFixed(1)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           ) : null}
-        </div>
-      )}
-
-      {/* Game Log Chart - Coming Soon */}
-      {gameLog && gameLog.length > 0 && (
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold">Performance History</h2>
-            <div className="flex gap-2">
-              {(['l5', 'l10', 'season'] as const).map((filter) => (
-                <button
-                  key={filter}
-                  onClick={() => setGameLogFilter(filter)}
-                  className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
-                    gameLogFilter === filter
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted hover:bg-muted/80'
-                  }`}
-                >
-                  {filter === 'l5' ? 'Last 5' : filter === 'l10' ? 'Last 10' : 'Season'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="text-muted-foreground text-sm">
-            Game log chart coming soon...
-          </div>
         </div>
       )}
     </div>

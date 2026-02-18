@@ -1,0 +1,223 @@
+import { useMemo } from 'react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend, Cell } from 'recharts'
+
+interface GameLog {
+  game_id: number
+  date: string
+  opponent: string
+  points?: number
+  rebounds?: number
+  assists?: number
+  steals?: number
+  blocks?: number
+  minutes?: number
+  result?: string // 'W' or 'L'
+}
+
+interface GameLogChartProps {
+  games: GameLog[]
+  statType: 'points' | 'rebounds' | 'assists' | 'steals' | 'blocks' | 'pra'
+  line?: number
+  filter: 'l5' | 'l10' | 'vs_opp'
+  opponentAbbr?: string
+}
+
+export default function GameLogChart({ games, statType, line, filter, opponentAbbr }: GameLogChartProps) {
+  const chartData = useMemo(() => {
+    if (!games || games.length === 0) return []
+
+    let filtered = [...games]
+
+    // Filter based on selected range
+    if (filter === 'l5') {
+      filtered = filtered.slice(0, 5)
+    } else if (filter === 'l10') {
+      filtered = filtered.slice(0, 10)
+    } else if (filter === 'vs_opp' && opponentAbbr) {
+      filtered = filtered.filter(g => g.opponent === opponentAbbr)
+    }
+
+    // Reverse to show oldest to newest on chart
+    filtered = filtered.reverse()
+
+    return filtered.map((game, index) => {
+      let value: number
+      
+      if (statType === 'pra') {
+        value = (game.points || 0) + (game.rebounds || 0) + (game.assists || 0)
+      } else {
+        value = game[statType] || 0
+      }
+
+      const hit = line ? value > line : undefined
+
+      return {
+        game: `G${index + 1}`,
+        date: new Date(game.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        opponent: game.opponent,
+        value: value,
+        hit: hit,
+        result: game.result
+      }
+    })
+  }, [games, statType, line, filter, opponentAbbr])
+
+  if (chartData.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-64 border border-border rounded-lg bg-muted/20">
+        <div className="text-center">
+          <p className="text-muted-foreground mb-2">No game log data available</p>
+          <p className="text-sm text-muted-foreground">
+            {filter === 'vs_opp' 
+              ? `No games found against ${opponentAbbr || 'this opponent'}`
+              : 'No recent games found'
+            }
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const average = chartData.reduce((sum, g) => sum + g.value, 0) / chartData.length
+
+  return (
+    <div className="space-y-4">
+      {/* Stats Summary */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="rounded-lg border border-border p-3 bg-card">
+          <div className="text-xs text-muted-foreground">Average</div>
+          <div className="text-2xl font-bold font-mono">{average.toFixed(1)}</div>
+        </div>
+        {line && (
+          <>
+            <div className="rounded-lg border border-border p-3 bg-card">
+              <div className="text-xs text-muted-foreground">Hit Rate</div>
+              <div className="text-2xl font-bold font-mono text-green-400">
+                {((chartData.filter(g => g.hit).length / chartData.length) * 100).toFixed(0)}%
+              </div>
+            </div>
+            <div className="rounded-lg border border-border p-3 bg-card">
+              <div className="text-xs text-muted-foreground">Hits / Games</div>
+              <div className="text-2xl font-bold font-mono">
+                {chartData.filter(g => g.hit).length} / {chartData.length}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Chart */}
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+            <XAxis 
+              dataKey="game" 
+              stroke="hsl(var(--muted-foreground))"
+              style={{ fontSize: '12px' }}
+            />
+            <YAxis 
+              stroke="hsl(var(--muted-foreground))"
+              style={{ fontSize: '12px' }}
+            />
+            <Tooltip 
+              contentStyle={{ 
+                backgroundColor: 'hsl(var(--card))',
+                border: '1px solid hsl(var(--border))',
+                borderRadius: '8px'
+              }}
+              labelStyle={{ color: 'hsl(var(--foreground))' }}
+              content={({ active, payload }) => {
+                if (!active || !payload || !payload.length) return null
+                const data = payload[0].payload
+                return (
+                  <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
+                    <div className="font-semibold mb-2">{data.date}</div>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-muted-foreground">vs {data.opponent}</span>
+                        <span className="font-bold">{data.result}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-muted-foreground">{statType.toUpperCase()}:</span>
+                        <span className="font-mono font-bold">{data.value}</span>
+                      </div>
+                      {line && (
+                        <div className="flex items-center justify-between gap-4 pt-2 border-t border-border">
+                          <span className="text-muted-foreground">Line: {line}</span>
+                          <span className={`font-bold ${data.hit ? 'text-green-400' : 'text-red-400'}`}>
+                            {data.hit ? '✓ HIT' : '✗ MISS'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              }}
+            />
+            <Legend 
+              wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
+            />
+            
+            {/* Betting line */}
+            {line && (
+              <ReferenceLine 
+                y={line} 
+                stroke="hsl(var(--primary))" 
+                strokeDasharray="5 5"
+                strokeWidth={2}
+                label={{ 
+                  value: `Line: ${line}`, 
+                  position: 'right',
+                  fill: 'hsl(var(--primary))',
+                  fontSize: 12
+                }}
+              />
+            )}
+            
+            {/* Average line */}
+            <ReferenceLine 
+              y={average} 
+              stroke="hsl(var(--muted-foreground))" 
+              strokeDasharray="3 3"
+              label={{ 
+                value: `Avg: ${average.toFixed(1)}`, 
+                position: 'left',
+                fill: 'hsl(var(--muted-foreground))',
+                fontSize: 12
+              }}
+            />
+            
+            {/* Bars colored by hit/miss */}
+            <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+              {chartData.map((entry, index) => {
+                let color: string
+                if (entry.hit === undefined) {
+                  color = 'hsl(var(--primary))' // No line - use primary color
+                } else if (entry.hit) {
+                  color = 'hsl(142.1 76.2% 36.3%)' // Green for hit
+                } else {
+                  color = 'hsl(0 84.2% 60.2%)' // Red for miss
+                }
+                return <Cell key={`cell-${index}`} fill={color} />
+              })}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {line && (
+        <div className="flex items-center justify-center gap-6 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-green-500" />
+            <span className="text-muted-foreground">Hit Over</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded bg-red-500" />
+            <span className="text-muted-foreground">Missed Over</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
