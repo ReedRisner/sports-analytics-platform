@@ -1,40 +1,115 @@
+import { useEdgeFinder } from '@/hooks/useEdgeFinder'
+import { BetCard } from '@/components/projections/BetCard'
+import { TrendingUp } from 'lucide-react'
+
 /**
- * Dashboard - Today's top edges
+ * Dashboard - Best Bets of the Day
  */
 export default function Dashboard() {
+  // Fetch ALL stat types (not just points) with minimum 3% edge
+  const { data: edges, isLoading, error } = useEdgeFinder(undefined, undefined, 3.0)
+
+  // Get top 10 bets sorted by absolute edge percentage (across ALL stats)
+  const topBets = edges
+    ?.sort((a, b) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
+    .slice(0, 10) || []
+
+  const totalBetsFound = edges?.length || 0
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-2">
-          Today's top prop betting edges
-        </p>
+    <div className="space-y-10 pb-12">
+      {/* Sleek Header */}
+      <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-background p-8">
+        {/* Glow effect */}
+        <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-transparent to-primary/20 blur-2xl" />
+        
+        {/* Content */}
+        <div className="relative">
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-5xl font-black tracking-tight bg-gradient-to-r from-black via-black to-black/60 bg-clip-text text-transparent">
+              Today's Best Bets
+            </h1>
+            <div className="text-right">
+              <div className="text-sm text-muted-foreground font-medium">
+                {new Date().toLocaleDateString('en-US', { 
+                  weekday: 'long'
+                })}
+              </div>
+              <div className="text-2xl font-bold">
+                {new Date().toLocaleDateString('en-US', { 
+                  month: 'short', 
+                  day: 'numeric',
+                  year: 'numeric' 
+                })}
+              </div>
+            </div>
+          </div>
+          
+          {/* Stats bar */}
+          <div className="flex items-center gap-6 mt-4">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-green-400" />
+              <span className="text-sm text-muted-foreground">
+                <span className="font-bold text-foreground">{totalBetsFound}</span> edges found
+              </span>
+            </div>
+            {topBets.length > 0 && (
+              <>
+                <div className="h-4 w-px bg-border" />
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">
+                    Top edge: <span className="font-bold text-green-400">
+                      +{Math.abs(topBets[0].edge_pct).toFixed(1)}%
+                    </span>
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        {/* Stats cards */}
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="text-sm text-muted-foreground">Total Edges</div>
-          <div className="text-3xl font-bold mt-2">--</div>
+      {/* Loading State */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-20">
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            <p className="text-muted-foreground">Finding the best bets...</p>
+          </div>
         </div>
-        
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="text-sm text-muted-foreground">Avg Edge %</div>
-          <div className="text-3xl font-bold mt-2">--</div>
-        </div>
-        
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="text-sm text-muted-foreground">High Confidence</div>
-          <div className="text-3xl font-bold mt-2">--</div>
-        </div>
-      </div>
+      )}
 
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h2 className="text-xl font-semibold mb-4">Top Edges Today</h2>
-        <p className="text-muted-foreground text-sm">
-          Connect to backend to see real projections...
-        </p>
-      </div>
+      {/* Error State */}
+      {error && (
+        <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-8 text-center">
+          <div className="text-red-400 font-semibold text-lg mb-2">Unable to load bets</div>
+          <div className="text-red-400/80 text-sm">
+            {error instanceof Error ? error.message : 'Unknown error occurred'}
+          </div>
+          <div className="text-red-400/60 text-sm mt-2">
+            Make sure your backend is running at http://localhost:8000
+          </div>
+        </div>
+      )}
+
+      {/* Top 10 Bets Grid */}
+      {!isLoading && !error && topBets.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+          {topBets.map((edge, index) => (
+            <BetCard key={`${edge.player_id}-${edge.stat_type}-${index}`} edge={edge} rank={index + 1} />
+          ))}
+        </div>
+      )}
+
+      {/* No Bets Found */}
+      {!isLoading && !error && topBets.length === 0 && (
+        <div className="rounded-xl border border-border bg-card/50 p-12 text-center">
+          <div className="text-muted-foreground text-lg mb-2">No bets found today</div>
+          <p className="text-sm text-muted-foreground">
+            Check back later or adjust your filters
+          </p>
+        </div>
+      )}
     </div>
   )
 }

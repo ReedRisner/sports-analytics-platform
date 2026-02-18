@@ -1,37 +1,35 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
-    --radius: 0.5rem;
-  }
+@theme {
+  --color-background: 240 10% 3.9%;
+  --color-foreground: 0 0% 98%;
+  --color-card: 240 10% 3.9%;
+  --color-card-foreground: 0 0% 98%;
+  --color-popover: 240 10% 3.9%;
+  --color-popover-foreground: 0 0% 98%;
+  --color-primary: 0 0% 98%;
+  --color-primary-foreground: 240 5.9% 10%;
+  --color-secondary: 240 3.7% 15.9%;
+  --color-secondary-foreground: 0 0% 98%;
+  --color-muted: 240 3.7% 15.9%;
+  --color-muted-foreground: 240 5% 64.9%;
+  --color-accent: 240 3.7% 15.9%;
+  --color-accent-foreground: 0 0% 98%;
+  --color-border: 240 3.7% 15.9%;
+  --color-input: 240 3.7% 15.9%;
+  --color-ring: 240 4.9% 83.9%;
+  --radius: 0.5rem;
+  
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 }
 
-@layer base {
-  * {
-    border-color: hsl(var(--border));
-  }
+* {
+  border-color: hsl(var(--border));
+}
+
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: ui-sans-serif, system-ui, sans-serif;
-}
 }

@@ -14,6 +14,7 @@ export function Header() {
   const navLinks = [
     { path: '/', label: 'Dashboard' },
     { path: '/edges', label: 'Edge Finder' },
+    { path: '/players', label: 'Players' },
     { path: '/matchups', label: 'Matchups' },
     { path: '/pricing', label: 'Pricing' },
   ]
@@ -47,11 +48,11 @@ export function Header() {
           ))}
         </nav>
         
-        {/* User menu (placeholder for now) */}
+        {/* Login */}
         <div className="flex items-center gap-4">
           <Link
             to="/login"
-            className="text-sm text-muted-foreground hover:text-primary transition-colors"
+            className="text-sm font-medium text-muted-foreground hover:text-primary transition-colors"
           >
             Login
           </Link>

@@ -22,7 +22,9 @@ export const oddsAPI = {
         position,
       },
     })
-    return data
+    
+    // Backend returns { edges: [...] }, we need just the array
+    return data.edges || []
   },
 
   /**

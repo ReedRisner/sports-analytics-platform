@@ -6,6 +6,7 @@ import { PageLayout } from './components/layout/PageLayout'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const EdgeFinder = lazy(() => import('./pages/Edgefinder'))
 const PlayerPage = lazy(() => import('./pages/PlayerPage'))
+const Players = lazy(() => import('./pages/Players'))
 const MatchupRankings = lazy(() => import('./pages/MatchupRankings'))
 const Login = lazy(() => import('./pages/Login'))
 const Pricing = lazy(() => import('./pages/Pricing'))
@@ -25,6 +26,7 @@ export function AppRouter() {
         <Route path="/" element={<PageLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="edges" element={<EdgeFinder />} />
+          <Route path="players" element={<Players />} />
           <Route path="player/:id" element={<PlayerPage />} />
           <Route path="matchups" element={<MatchupRankings />} />
           <Route path="pricing" element={<Pricing />} />
