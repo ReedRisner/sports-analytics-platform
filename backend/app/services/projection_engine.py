@@ -35,8 +35,25 @@ W_SEASON = 0.20
 STD_WINDOW = 10
 
 # Minimum minutes for a game to count in a player's OWN averages.
-# Filters out injury scratches, garbage time cameos, etc.
 MIN_THRESHOLD = 10.0
+
+# ── Adjustment caps — prevent runaway multipliers ─────────────────────────────
+# Matchup factor capped at ±20% — opponent can't double a projection
+MATCHUP_FACTOR_MIN = 0.80
+MATCHUP_FACTOR_MAX = 1.20
+
+# Pace factor capped at ±15%
+PACE_FACTOR_MIN = 0.85
+PACE_FACTOR_MAX = 1.15
+
+# Home court advantage: ~3% boost at home (well documented in NBA data)
+HOME_FACTOR = 1.03
+
+# Back-to-back penalty: 0 days rest reduces output ~5%
+B2B_FACTOR = 0.95
+
+# Blowout risk penalty: max 8% reduction when game is likely a blowout
+BLOWOUT_MAX_PENALTY = 0.08
 
 POS_BUCKET = {
     'G':   'g',
@@ -122,6 +139,12 @@ class Projection:
 
     matchup:      Optional[MatchupContext]
 
+    # Situational adjustment factors (1.0 = no adjustment)
+    home_factor:    float = 1.0
+    rest_factor:    float = 1.0
+    blowout_factor: float = 1.0
+    is_back_to_back: bool = False
+
     line:           Optional[float] = None
     edge_pct:       Optional[float] = None
     over_prob:      Optional[float] = None
@@ -175,6 +198,68 @@ def _recommendation(edge_pct: float, over_prob: float) -> str:
     if edge_pct >= 5 and over_prob >= 0.55:  return "OVER"
     if edge_pct <= -5 and over_prob <= 0.45: return "UNDER"
     return "PASS"
+
+
+
+# ── Situational adjustment helpers ───────────────────────────────────────────
+
+def _home_away_factor(db: Session, player: Player, game_id: int) -> float:
+    # Returns HOME_FACTOR if player is at home, 1.0 if away.
+    if not game_id:
+        return 1.0
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        return 1.0
+    return HOME_FACTOR if game.home_team_id == player.team_id else 1.0
+
+
+def _rest_factor(db: Session, player: Player) -> float:
+    # Checks if the most recent game was yesterday (back-to-back).
+    # Returns B2B_FACTOR (0.95) if so, 1.0 otherwise.
+    recent_games = (
+        db.query(Game)
+        .filter(
+            ((Game.home_team_id == player.team_id) | (Game.away_team_id == player.team_id)),
+            Game.home_score != None,
+        )
+        .order_by(desc(Game.date))
+        .limit(2)
+        .all()
+    )
+    if len(recent_games) < 2:
+        return 1.0
+    days_rest = (recent_games[0].date - recent_games[1].date).days
+    return B2B_FACTOR if days_rest == 1 else 1.0
+
+
+def _blowout_factor(db: Session, player: Player, opp_team_id: int) -> float:
+    # Penalizes projections when the player's team is a heavy underdog.
+    # Large point differential gap = likely blowout = early garbage time.
+    # Max penalty is BLOWOUT_MAX_PENALTY (8%) when gap >= 20 pts.
+    team = db.query(Team).filter(Team.id == player.team_id).first()
+    opp  = db.query(Team).filter(Team.id == opp_team_id).first()
+    if not team or not opp:
+        return 1.0
+
+    team_ppg     = _safe(team.points_per_game)
+    team_opp_ppg = _safe(team.opp_points_per_game)
+    opp_ppg      = _safe(opp.points_per_game)
+    opp_opp_ppg  = _safe(opp.opp_points_per_game)
+
+    if not team_ppg or not opp_ppg:
+        return 1.0
+
+    team_diff = team_ppg - team_opp_ppg   # positive = team is good
+    opp_diff  = opp_ppg - opp_opp_ppg    # positive = opp is good
+
+    # How much better is the opponent? Positive = bad for our player
+    gap = opp_diff - team_diff
+    if gap <= 8:
+        return 1.0
+
+    # Scale linearly: gap=8 → 0%, gap=20 → full BLOWOUT_MAX_PENALTY
+    penalty_scale = min((gap - 8) / 12.0, 1.0)
+    return 1.0 - (BLOWOUT_MAX_PENALTY * penalty_scale)
 
 
 # ── League averages ───────────────────────────────────────────────────────────
@@ -321,12 +406,18 @@ def project_player(
     opp_team_id: Optional[int]   = None,
     line:        Optional[float] = None,
     min_minutes: float           = MIN_THRESHOLD,
+    game_id:     Optional[int]   = None,
 ) -> Optional[Projection]:
     """
     Full projection for one player + stat type.
 
-    min_minutes: games below this threshold are excluded from the player's
-                 own averages (default 10 min).
+    Adjustments applied (in order):
+      1. Weighted avg baseline (L5 x0.5 + L10 x0.3 + season x0.2)
+      2. Matchup factor (opp defensive rank by position, capped ±20%)
+      3. Pace factor (opp pace vs league avg, capped ±15%)
+      4. Home/away factor (+3% at home)
+      5. Rest/back-to-back factor (-5% on 0 days rest)
+      6. Blowout risk factor (up to -8% if heavy underdog)
     """
     if stat_type not in STAT_CONFIG:
         return None
@@ -356,7 +447,22 @@ def project_player(
     if opp_team_id:
         matchup = get_matchup_context(db, player, opp_team_id, stat_type)
         if matchup:
-            adjusted = base * matchup.pace_factor * matchup.matchup_factor
+            # Cap both factors to prevent runaway projections
+            pace_factor    = max(PACE_FACTOR_MIN,    min(PACE_FACTOR_MAX,    matchup.pace_factor))
+            matchup_factor = max(MATCHUP_FACTOR_MIN, min(MATCHUP_FACTOR_MAX, matchup.matchup_factor))
+            adjusted = base * pace_factor * matchup_factor
+
+        # ── Situational adjustments ───────────────────────────────────────
+        # Home/away: +3% at home court
+        home_factor   = _home_away_factor(db, player, game_id)
+
+        # Back-to-back: -5% on 0 days rest
+        rest_factor   = _rest_factor(db, player)
+
+        # Blowout risk: up to -8% if heavy underdog
+        blowout_factor = _blowout_factor(db, player, opp_team_id)
+
+        adjusted = adjusted * home_factor * rest_factor * blowout_factor
 
     recent = values[:STD_WINDOW]
     std    = _std_dev(recent)
@@ -380,6 +486,11 @@ def project_player(
 
     team = db.query(Team).filter(Team.id == player.team_id).first()
 
+    # Collect final adjustment factors for transparency in the API response
+    _home   = home_factor   if opp_team_id else 1.0
+    _rest   = rest_factor   if opp_team_id else 1.0
+    _blowout = blowout_factor if opp_team_id else 1.0
+
     return Projection(
         player_id    = player.id,
         player_name  = player.name,
@@ -395,6 +506,10 @@ def project_player(
         floor        = round(adjusted - std, 2),
         ceiling      = round(adjusted + std, 2),
         matchup      = matchup,
+        home_factor     = round(_home, 3),
+        rest_factor     = round(_rest, 3),
+        blowout_factor  = round(_blowout, 3),
+        is_back_to_back = (_rest < 1.0),
         line         = line,
         edge_pct     = round(edge_pct, 2)         if edge_pct   is not None else None,
         over_prob    = round(over_prob * 100, 1)   if over_prob  is not None else None,

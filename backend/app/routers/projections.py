@@ -63,6 +63,13 @@ def _proj_to_dict(proj) -> dict:
         "over_prob":      proj.over_prob,
         "under_prob":     proj.under_prob,
         "recommendation": proj.recommendation,
+        # Situational adjustments applied
+        "adjustments": {
+            "home_factor":     proj.home_factor,
+            "rest_factor":     proj.rest_factor,
+            "blowout_factor":  proj.blowout_factor,
+            "is_back_to_back": proj.is_back_to_back,
+        },
     }
 
 

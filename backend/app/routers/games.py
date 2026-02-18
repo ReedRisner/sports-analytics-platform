@@ -18,6 +18,25 @@ router = APIRouter(prefix="/games", tags=["games"])
 FEATURED_STATS = ['points', 'rebounds', 'assists', 'steals', 'blocks', 'pra']
 
 
+def _next_game_date(db: Session) -> date | None:
+    """
+    Returns the next date (today or forward) that has games scheduled.
+    Looks up to 7 days ahead. Falls back to most recent completed game
+    if nothing upcoming is found (e.g. end of season).
+    """
+    today = date.today()
+    for days_ahead in range(8):
+        check_date = today + timedelta(days=days_ahead)
+        count = db.query(Game).filter(Game.date == check_date).count()
+        if count > 0:
+            return check_date
+    # Fallback: most recent completed game
+    last = db.query(Game).filter(
+        Game.home_score != None
+    ).order_by(desc(Game.date)).first()
+    return last.date if last else None
+
+
 def _safe(val, default=0.0):
     try:
         return float(val) if val is not None else default
@@ -104,12 +123,10 @@ def today_games(
     if not requested_stats:
         requested_stats = ['points', 'rebounds', 'assists', 'pra']
 
-    # Find the most recent game date
-    latest_game = db.query(Game).order_by(desc(Game.date)).first()
-    if not latest_game:
+    # Find the next upcoming game date (today or forward, up to 7 days)
+    game_date = _next_game_date(db)
+    if not game_date:
         return {"games": [], "date": str(date.today())}
-
-    game_date = latest_game.date
 
     # Get all games on that date
     games = db.query(Game).filter(Game.date == game_date).all()
