@@ -21,19 +21,35 @@ def _safe(val, default=0.0):
 
 def _nearest_game_date(db) -> date | None:
     """
-    Returns the nearest date (today or up to 3 days ahead) that has
-    odds lines stored. Falls back to today if nothing found.
+    Returns the nearest date (today or tomorrow only) that has
+    FanDuel odds lines stored.
+    Only looks 1 day ahead — we only want today's or tomorrow's game lines,
+    not games further in the future.
+    Falls back to today if nothing found.
     """
-    for days_ahead in range(4):
+    for days_ahead in range(2):  # only today or tomorrow
         check_date = date.today() + timedelta(days=days_ahead)
         games = db.query(Game).filter(Game.date == check_date).all()
         game_ids = [g.id for g in games]
         if game_ids:
-            from app.models.player import OddsLine as OL
-            count = db.query(OL).filter(OL.game_id.in_(game_ids)).count()
+            count = db.query(OddsLine).filter(
+                OddsLine.game_id.in_(game_ids),
+                OddsLine.sportsbook == 'fanduel',
+            ).count()
             if count > 0:
                 return check_date
-    # fallback — return today even if no lines, so endpoints don't break
+    # fallback — find next game date with fanduel lines within 7 days
+    for days_ahead in range(2, 8):
+        check_date = date.today() + timedelta(days=days_ahead)
+        games = db.query(Game).filter(Game.date == check_date).all()
+        game_ids = [g.id for g in games]
+        if game_ids:
+            count = db.query(OddsLine).filter(
+                OddsLine.game_id.in_(game_ids),
+                OddsLine.sportsbook == 'fanduel',
+            ).count()
+            if count > 0:
+                return check_date
     return date.today()
 
 

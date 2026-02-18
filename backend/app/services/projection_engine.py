@@ -232,10 +232,53 @@ def _rest_factor(db: Session, player: Player) -> float:
     return B2B_FACTOR if days_rest == 1 else 1.0
 
 
-def _blowout_factor(db: Session, player: Player, opp_team_id: int) -> float:
-    # Penalizes projections when the player's team is a heavy underdog.
-    # Large point differential gap = likely blowout = early garbage time.
-    # Max penalty is BLOWOUT_MAX_PENALTY (8%) when gap >= 20 pts.
+def _blowout_factor_vegas(db: Session, player: Player, opp_team_id: int, game_id: Optional[int]) -> float:
+    """
+    Uses the Vegas spread from odds lines to estimate blowout probability.
+
+    Logic:
+    - Fetch the FanDuel spread for this game from odds_lines (stat_type='spreads')
+    - If spread > 10 pts against the player's team, apply a scaling penalty
+    - Falls back to point-differential estimate if no spread is available
+    - Max penalty is BLOWOUT_MAX_PENALTY (8%) at a 15pt spread or worse
+
+    A spread of -10 means the team is expected to lose by 10.
+    That's borderline blowout territory in NBA terms.
+    """
+    from app.models.player import OddsLine
+
+    # ── Try Vegas spread first ────────────────────────────────────────────────
+    if game_id:
+        # Look for a spread line — stored as stat_type 'spreads' or 'h2h'
+        # FanDuel game spreads use the team name as description
+        # We look for any line tagged as spread for this game
+        spread_line = (
+            db.query(OddsLine)
+            .filter(
+                OddsLine.game_id   == game_id,
+                OddsLine.stat_type == 'spreads',
+                OddsLine.sportsbook == 'fanduel',
+            )
+            .first()
+        )
+        if spread_line and spread_line.line is not None:
+            # spread_line.line is negative for the favorite (e.g. -8.5 = favored by 8.5)
+            # We need to know if this spread is FOR or AGAINST our player's team
+            game = db.query(Game).filter(Game.id == game_id).first()
+            if game:
+                # The spread line's player_id maps to the team — use game home/away
+                # If our player's team is home and spread is positive, they are underdogs
+                is_home = game.home_team_id == player.team_id
+                # Positive spread = underdog (losing side), negative = favorite
+                spread = spread_line.line
+                # For home team the spread in odds is usually from home perspective
+                # A spread > 8 means our team is expected to lose badly
+                if spread > 8:
+                    penalty_scale = min((spread - 8) / 7.0, 1.0)
+                    return 1.0 - (BLOWOUT_MAX_PENALTY * penalty_scale)
+                return 1.0
+
+    # ── Fallback: use season point differential ───────────────────────────────
     team = db.query(Team).filter(Team.id == player.team_id).first()
     opp  = db.query(Team).filter(Team.id == opp_team_id).first()
     if not team or not opp:
@@ -249,15 +292,13 @@ def _blowout_factor(db: Session, player: Player, opp_team_id: int) -> float:
     if not team_ppg or not opp_ppg:
         return 1.0
 
-    team_diff = team_ppg - team_opp_ppg   # positive = team is good
-    opp_diff  = opp_ppg - opp_opp_ppg    # positive = opp is good
-
-    # How much better is the opponent? Positive = bad for our player
+    team_diff = team_ppg - team_opp_ppg
+    opp_diff  = opp_ppg - opp_opp_ppg
     gap = opp_diff - team_diff
+
     if gap <= 8:
         return 1.0
 
-    # Scale linearly: gap=8 → 0%, gap=20 → full BLOWOUT_MAX_PENALTY
     penalty_scale = min((gap - 8) / 12.0, 1.0)
     return 1.0 - (BLOWOUT_MAX_PENALTY * penalty_scale)
 
@@ -413,11 +454,11 @@ def project_player(
 
     Adjustments applied (in order):
       1. Weighted avg baseline (L5 x0.5 + L10 x0.3 + season x0.2)
-      2. Matchup factor (opp defensive rank by position, capped ±20%)
-      3. Pace factor (opp pace vs league avg, capped ±15%)
+      2. Matchup factor (opp defensive rank by position, capped +/-20%)
+      3. Pace factor (opp pace vs league avg, capped +/-15%)
       4. Home/away factor (+3% at home)
       5. Rest/back-to-back factor (-5% on 0 days rest)
-      6. Blowout risk factor (up to -8% if heavy underdog)
+      6. Blowout risk factor (up to -8% based on Vegas spread)
     """
     if stat_type not in STAT_CONFIG:
         return None
@@ -444,6 +485,11 @@ def project_player(
     matchup  = None
     adjusted = base
 
+    # Default all situational factors to neutral
+    home_factor    = 1.0
+    rest_factor    = 1.0
+    blowout_factor = 1.0
+
     if opp_team_id:
         matchup = get_matchup_context(db, player, opp_team_id, stat_type)
         if matchup:
@@ -452,15 +498,33 @@ def project_player(
             matchup_factor = max(MATCHUP_FACTOR_MIN, min(MATCHUP_FACTOR_MAX, matchup.matchup_factor))
             adjusted = base * pace_factor * matchup_factor
 
+        # ── Find the game in DB to determine home/away ────────────────────
+        # Look up the next scheduled game between these two teams
+        if not game_id:
+            from datetime import date as date_type
+            upcoming = (
+                db.query(Game)
+                .filter(
+                    Game.date >= date_type.today(),
+                    ((Game.home_team_id == player.team_id) & (Game.away_team_id == opp_team_id)) |
+                    ((Game.away_team_id == player.team_id) & (Game.home_team_id == opp_team_id))
+                )
+                .order_by(Game.date)
+                .first()
+            )
+            if upcoming:
+                game_id = upcoming.id
+
         # ── Situational adjustments ───────────────────────────────────────
         # Home/away: +3% at home court
-        home_factor   = _home_away_factor(db, player, game_id)
+        home_factor    = _home_away_factor(db, player, game_id)
 
         # Back-to-back: -5% on 0 days rest
-        rest_factor   = _rest_factor(db, player)
+        rest_factor    = _rest_factor(db, player)
 
-        # Blowout risk: up to -8% if heavy underdog
-        blowout_factor = _blowout_factor(db, player, opp_team_id)
+        # Blowout risk: use Vegas spread from odds lines if available,
+        # fall back to point differential estimate
+        blowout_factor = _blowout_factor_vegas(db, player, opp_team_id, game_id)
 
         adjusted = adjusted * home_factor * rest_factor * blowout_factor
 

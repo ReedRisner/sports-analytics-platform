@@ -3,16 +3,45 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional
-from datetime import date
+from datetime import date, timedelta
 
 from app.database import get_db
-from app.models.player import Player, Team, Game, PlayerGameStats
+from app.models.player import Player, Team, Game, PlayerGameStats, OddsLine
 from app.services.projection_engine import (
     project_player,
     STAT_CONFIG,
 )
 
 router = APIRouter(prefix="/projections", tags=["projections"])
+
+
+def _next_game_date_with_odds(db: Session) -> date | None:
+    """
+    Returns the nearest date (today or upcoming) that has FanDuel odds lines.
+    Checks today and tomorrow first, then up to 7 days ahead.
+    This ensures projections always align with the same slate that has live lines.
+    Falls back to next date with any scheduled games if no odds found.
+    """
+    # First: look for dates with FanDuel lines (today or tomorrow preferred)
+    for days_ahead in range(8):
+        check_date = date.today() + timedelta(days=days_ahead)
+        games = db.query(Game).filter(Game.date == check_date).all()
+        game_ids = [g.id for g in games]
+        if game_ids:
+            count = db.query(OddsLine).filter(
+                OddsLine.game_id.in_(game_ids),
+                OddsLine.sportsbook == 'fanduel',
+            ).count()
+            if count > 0:
+                return check_date
+
+    # Fallback: next date with any scheduled games
+    for days_ahead in range(8):
+        check_date = date.today() + timedelta(days=days_ahead)
+        if db.query(Game).filter(Game.date == check_date).count() > 0:
+            return check_date
+
+    return date.today()
 
 
 def _proj_to_dict(proj) -> dict:
@@ -91,11 +120,10 @@ def today_projections(
             detail=f"Invalid stat_type. Options: {list(STAT_CONFIG.keys())}"
         )
 
-    latest_game = db.query(Game).order_by(desc(Game.date)).first()
-    if not latest_game:
+    game_date = _next_game_date_with_odds(db)
+    if not game_date:
         return {"projections": [], "date": str(date.today())}
 
-    game_date = latest_game.date
     games = db.query(Game).filter(Game.date == game_date).all()
 
     results = []
@@ -141,11 +169,10 @@ def edge_finder(
     Returns top projections for today sorted by matchup grade
     as a proxy for edge until lines are integrated.
     """
-    latest_game = db.query(Game).order_by(desc(Game.date)).first()
-    if not latest_game:
+    game_date = _next_game_date_with_odds(db)
+    if not game_date:
         return {"edges": [], "message": "No games found"}
 
-    game_date = latest_game.date
     games = db.query(Game).filter(Game.date == game_date).all()
 
     results = []
