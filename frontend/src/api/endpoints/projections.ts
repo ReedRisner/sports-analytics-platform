@@ -22,14 +22,18 @@ export const projectionsAPI = {
   },
 
   /**
-   * Run Monte Carlo simulation for a player
+   * Run Monte Carlo simulation for a player (takes 15-30 seconds)
    */
   runMonteCarloSimulation: async (params: {
     player_id: number
     stat_type: string
     line: number
   }) => {
-    const { data } = await apiClient.get('/projections/simulate', { params })
+    // Backend expects POST with query parameters, not body
+    const { data } = await apiClient.post('/projections/simulate', null, {
+      params, // Query parameters
+      timeout: 60000, // 60 second timeout for Monte Carlo
+    })
     return data
   },
 

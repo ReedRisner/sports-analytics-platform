@@ -1,20 +1,26 @@
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import { BetCard } from '@/components/projections/BetCard'
 import { TrendingUp } from 'lucide-react'
+import type { Edge } from '@/api/types'
 
 /**
  * Dashboard - Best Bets of the Day
  */
 export default function Dashboard() {
   // Fetch ALL stat types (not just points) with minimum 3% edge
-  const { data: edges, isLoading, error } = useEdgeFinder(undefined, undefined, 3.0)
+  const { data: edgesResponse, isLoading, error } = useEdgeFinder(undefined, undefined, 3.0)
+
+  // Extract edges array from response (backend returns { edges: [...] })
+  const edges: Edge[] = Array.isArray(edgesResponse) 
+    ? edgesResponse 
+    : (edgesResponse as any)?.edges || []
 
   // Get top 10 bets sorted by absolute edge percentage (across ALL stats)
   const topBets = edges
-    ?.sort((a, b) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
-    .slice(0, 10) || []
+    .sort((a: Edge, b: Edge) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
+    .slice(0, 10)
 
-  const totalBetsFound = edges?.length || 0
+  const totalBetsFound = edges.length
 
   return (
     <div className="space-y-10 pb-12">
@@ -92,7 +98,7 @@ export default function Dashboard() {
       {/* Top 10 Bets Grid */}
       {!isLoading && !error && topBets.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-          {topBets.map((edge, index) => (
+          {topBets.map((edge: Edge, index: number) => (
             <BetCard key={`${edge.player_id}-${edge.stat_type}-${index}`} edge={edge} rank={index + 1} />
           ))}
         </div>

@@ -1,6 +1,7 @@
 import axios from 'axios'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// @ts-ignore - Vite env variable
+const API_URL = import.meta.env?.VITE_API_URL || 'http://localhost:8000'
 
 /**
  * Axios instance with base configuration
@@ -41,9 +42,16 @@ apiClient.interceptors.response.use(
       window.location.href = '/login'
     }
     
-    // Log errors in development
-    if (import.meta.env.DEV) {
-      console.error('API Error:', error.response?.data || error.message)
+    // Log errors in development (except expected 404s)
+    const isDev = process.env.NODE_ENV === 'development'
+    if (isDev) {
+      const is404 = error.response?.status === 404
+      const isExpectedMissing = error.config?.url?.includes('/game-log')
+      
+      // Don't log 404s for endpoints we know don't exist yet
+      if (!is404 || !isExpectedMissing) {
+        console.error('API Error:', error.response?.data || error.message)
+      }
     }
     
     return Promise.reject(error)
