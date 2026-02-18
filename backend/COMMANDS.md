@@ -4,8 +4,12 @@
 ```
 cd C:\Users\reedl\OneDrive\Documents\sports-analytics-platform\backend
 .\venv\Scripts\activate
+
 python -c "from app.services.nba_fetcher import nightly_update; nightly_update()"
+
 python -m app.services.odds_fetcher
+
+python -c "from app.services.projection_grader import grade_yesterdays_projections; from app.database import SessionLocal; grade_yesterdays_projections(SessionLocal())"
 ```
 ---
 

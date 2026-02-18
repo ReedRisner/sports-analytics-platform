@@ -904,13 +904,26 @@ def nightly_update(season="2025-26"):
         fetch_team_stats(season=season)
 
         # ── Step 5: Defensive stats by position ───────────────────────────────
-        print("\n[5/5] Updating defensive stats by position...")
+        print("\n[5/6] Updating defensive stats by position...")
         fetch_defensive_stats_by_position(season=season)
+
+        # ── Step 6: Grade yesterday's projections ─────────────────────────────
+        print("\n[6/6] Grading yesterday's projections...")
+        grade_result = {'projections_graded': 0, 'games_graded': 0}
+        try:
+            from app.services.projection_grader import grade_yesterdays_projections
+            grade_result = grade_yesterdays_projections(db)
+            print(f"  ✓ Graded {grade_result['projections_graded']} projections from {grade_result['games_graded']} games")
+        except Exception as e:
+            print(f"  ⚠ Projection grading failed: {e}")
+            import traceback
+            traceback.print_exc()
 
         print("\n" + "=" * 50)
         print(f"  ✓ Nightly update complete")
         print(f"    New games: {new_games}")
         print(f"    New stat lines: {saved}")
+        print(f"    Projections graded: {grade_result.get('projections_graded', 0)}")
         print("=" * 50)
         log.info(f"Nightly NBA update complete — {new_games} games, {saved} stat lines")
 

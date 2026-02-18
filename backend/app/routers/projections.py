@@ -11,6 +11,13 @@ from app.services.projection_engine import (
     project_player,
     STAT_CONFIG,
 )
+from app.services.monte_carlo import (
+    simulate_stat_distribution,
+    calculate_hit_probability,
+    calculate_expected_value,
+    generate_confidence_intervals,
+)
+from app.services.projection_grader import calculate_model_accuracy
 
 router = APIRouter(prefix="/projections", tags=["projections"])
 
@@ -97,6 +104,9 @@ def _proj_to_dict(proj) -> dict:
             "home_factor":     proj.home_factor,
             "rest_factor":     proj.rest_factor,
             "blowout_factor":  proj.blowout_factor,
+            "injury_factor":   proj.injury_factor,
+            "form_factor":     proj.form_factor,
+            "opp_strength":    proj.opp_strength,
             "is_back_to_back": proj.is_back_to_back,
         },
     }
@@ -322,6 +332,104 @@ def matchup_rankings(
         "note":      "Rank 1 = most permissive (best matchup). Rank 30 = toughest.",
         "teams":     result,
     }
+
+
+# ── POST /projections/simulate ────────────────────────────────────────────────
+@router.post("/simulate")
+def simulate_prop(
+    player_id:   int,
+    stat_type:   str,
+    line:        float,
+    opp_team_id: Optional[int] = None,
+    over_odds:   int = -110,
+    under_odds:  int = -110,
+    db: Session = Depends(get_db),
+):
+    """
+    Run 10,000 Monte Carlo simulations for a prop bet.
+    
+    Returns:
+        Full distribution analysis with percentiles, hit probability,
+        expected value, and Kelly Criterion bet sizing.
+    """
+    if stat_type not in STAT_CONFIG:
+        raise HTTPException(400, "Invalid stat_type")
+    
+    proj = project_player(db, player_id, stat_type, opp_team_id, line)
+    if not proj:
+        raise HTTPException(404, "No projection available")
+    
+    sim_result = simulate_stat_distribution(
+        mean=proj.projected,
+        std_dev=proj.std_dev,
+        n_simulations=10000,
+    )
+    
+    over_prob, under_prob = calculate_hit_probability(
+        mean=proj.projected,
+        std_dev=proj.std_dev,
+        line=line,
+        n_simulations=10000,
+    )
+    
+    ev = calculate_expected_value(
+        over_prob=over_prob,
+        over_odds=over_odds,
+        under_prob=under_prob,
+        under_odds=under_odds,
+    )
+    
+    confidence = generate_confidence_intervals(proj.projected, proj.std_dev)
+    
+    return {
+        "player_id": player_id,
+        "player_name": proj.player_name,
+        "team_name": proj.team_name,
+        "stat_type": stat_type,
+        "line": line,
+        "projected": proj.projected,
+        "std_dev": proj.std_dev,
+        "monte_carlo": {
+            **sim_result,
+            "over_probability": over_prob,
+            "under_probability": under_prob,
+            "expected_value": ev,
+            "confidence_intervals": confidence,
+        },
+        "adjustments": {
+            "home_factor": proj.home_factor,
+            "rest_factor": proj.rest_factor,
+            "blowout_factor": proj.blowout_factor,
+            "injury_factor": proj.injury_factor,
+            "form_factor": proj.form_factor,
+            "opp_strength": proj.opp_strength,
+        }
+    }
+
+
+# ── GET /projections/accuracy ─────────────────────────────────────────────────
+@router.get("/accuracy")
+def model_accuracy(
+    stat_type:  str = Query("points"),
+    days_back:  int = Query(30, le=365),
+    min_edge:   Optional[float] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Historical model accuracy metrics.
+    
+    Shows:
+    - Overall win rate
+    - Win rate by edge size
+    - Mean Absolute Error
+    - Hypothetical profit/loss
+    """
+    return calculate_model_accuracy(
+        db=db,
+        stat_type=stat_type,
+        days_back=days_back,
+        min_edge=min_edge,
+    )
 
 
 def _safe(val, default=0.0):

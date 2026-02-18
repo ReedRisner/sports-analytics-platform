@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from app.database import get_db
 from app.models.player import Player, Team, Game, OddsLine
 from app.services.projection_engine import project_player, STAT_CONFIG
+from app.services.projection_saver import save_projection
 
 router = APIRouter(prefix="/odds", tags=["odds"])
 
@@ -160,6 +161,16 @@ def edge_finder(
         )
         if not proj or proj.projected <= 0:
             continue
+
+        # Save projection for accuracy tracking
+        save_projection(
+            db=db,
+            proj=proj,
+            game_id=ol.game_id,
+            opp_team_id=opp_team_id,
+            line=ol.line,
+            sportsbook=sportsbook,
+        )
 
         # Only include if edge is meaningful
         if abs(proj.edge_pct or 0) < min_edge_pct:

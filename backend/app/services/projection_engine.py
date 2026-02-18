@@ -24,6 +24,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.models.player import Player, PlayerGameStats, Team, Game
+from app.services.injury_tracker import calculate_injury_impact_factor
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 LEAGUE_AVG_PACE = 100.0
@@ -100,13 +101,12 @@ class MatchupContext:
     opp_name:       str
     opp_abbr:       str
     opp_pace:       float
-    allowed_avg:    Optional[float]   # allowed avg for THIS stat type
-    def_rank:       Optional[int]     # rank for THIS stat type (1 = most permissive)
+    allowed_avg:    Optional[float]
+    def_rank:       Optional[int]
     pace_factor:    float
     matchup_factor: float
     matchup_grade:  str
 
-    # Full defensive breakdown for the player's position bucket
     pts_allowed:    Optional[float] = None
     reb_allowed:    Optional[float] = None
     ast_allowed:    Optional[float] = None
@@ -139,10 +139,12 @@ class Projection:
 
     matchup:      Optional[MatchupContext]
 
-    # Situational adjustment factors (1.0 = no adjustment)
     home_factor:    float = 1.0
     rest_factor:    float = 1.0
     blowout_factor: float = 1.0
+    injury_factor:  float = 1.0
+    form_factor:    float = 1.0
+    opp_strength:   float = 1.0
     is_back_to_back: bool = False
 
     line:           Optional[float] = None
@@ -200,11 +202,47 @@ def _recommendation(edge_pct: float, over_prob: float) -> str:
     return "PASS"
 
 
+def _recent_form_factor(values: list[float]) -> float:
+    """
+    Weight recent trend. If L3 > L10, player is heating up.
+    """
+    if len(values) < 5:
+        return 1.0
+    
+    l3_avg = _avg(values[:3])
+    l10_avg = _avg(values[:10])
+    
+    if l10_avg == 0:
+        return 1.0
+    
+    trend = (l3_avg - l10_avg) / l10_avg
+    trend_factor = 1.0 + max(-0.08, min(0.08, trend))
+    
+    return trend_factor
+
+
+def _opponent_strength_factor(db: Session, opp_team_id: int) -> float:
+    """
+    Adjust for opponent quality beyond position-specific defense.
+    """
+    opp = db.query(Team).filter(Team.id == opp_team_id).first()
+    if not opp or not opp.defensive_rating:
+        return 1.0
+    
+    teams = db.query(Team).filter(Team.defensive_rating != None).all()
+    if not teams:
+        return 1.0
+    
+    league_avg = _avg([_safe(t.defensive_rating) for t in teams])
+    strength_factor = league_avg / opp.defensive_rating
+    strength_factor = max(0.90, min(1.10, strength_factor))
+    
+    return strength_factor
+
 
 # ── Situational adjustment helpers ───────────────────────────────────────────
 
 def _home_away_factor(db: Session, player: Player, game_id: int) -> float:
-    # Returns HOME_FACTOR if player is at home, 1.0 if away.
     if not game_id:
         return 1.0
     game = db.query(Game).filter(Game.id == game_id).first()
@@ -214,8 +252,6 @@ def _home_away_factor(db: Session, player: Player, game_id: int) -> float:
 
 
 def _rest_factor(db: Session, player: Player) -> float:
-    # Checks if the most recent game was yesterday (back-to-back).
-    # Returns B2B_FACTOR (0.95) if so, 1.0 otherwise.
     recent_games = (
         db.query(Game)
         .filter(
@@ -233,25 +269,9 @@ def _rest_factor(db: Session, player: Player) -> float:
 
 
 def _blowout_factor_vegas(db: Session, player: Player, opp_team_id: int, game_id: Optional[int]) -> float:
-    """
-    Uses the Vegas spread from odds lines to estimate blowout probability.
-
-    Logic:
-    - Fetch the FanDuel spread for this game from odds_lines (stat_type='spreads')
-    - If spread > 10 pts against the player's team, apply a scaling penalty
-    - Falls back to point-differential estimate if no spread is available
-    - Max penalty is BLOWOUT_MAX_PENALTY (8%) at a 15pt spread or worse
-
-    A spread of -10 means the team is expected to lose by 10.
-    That's borderline blowout territory in NBA terms.
-    """
     from app.models.player import OddsLine
 
-    # ── Try Vegas spread first ────────────────────────────────────────────────
     if game_id:
-        # Look for a spread line — stored as stat_type 'spreads' or 'h2h'
-        # FanDuel game spreads use the team name as description
-        # We look for any line tagged as spread for this game
         spread_line = (
             db.query(OddsLine)
             .filter(
@@ -262,23 +282,14 @@ def _blowout_factor_vegas(db: Session, player: Player, opp_team_id: int, game_id
             .first()
         )
         if spread_line and spread_line.line is not None:
-            # spread_line.line is negative for the favorite (e.g. -8.5 = favored by 8.5)
-            # We need to know if this spread is FOR or AGAINST our player's team
             game = db.query(Game).filter(Game.id == game_id).first()
             if game:
-                # The spread line's player_id maps to the team — use game home/away
-                # If our player's team is home and spread is positive, they are underdogs
-                is_home = game.home_team_id == player.team_id
-                # Positive spread = underdog (losing side), negative = favorite
                 spread = spread_line.line
-                # For home team the spread in odds is usually from home perspective
-                # A spread > 8 means our team is expected to lose badly
                 if spread > 8:
                     penalty_scale = min((spread - 8) / 7.0, 1.0)
                     return 1.0 - (BLOWOUT_MAX_PENALTY * penalty_scale)
                 return 1.0
 
-    # ── Fallback: use season point differential ───────────────────────────────
     team = db.query(Team).filter(Team.id == player.team_id).first()
     opp  = db.query(Team).filter(Team.id == opp_team_id).first()
     if not team or not opp:
@@ -326,15 +337,6 @@ def get_player_stat_lines(
     limit:       int   = 82,
     min_minutes: float = MIN_THRESHOLD,
 ) -> list[float]:
-    """
-    Return stat values from the player's most recent qualifying games
-    (MIN >= min_minutes), ordered most-recent-first.
-
-    Filtering by minutes ensures:
-    - Injury-limited appearances don't drag averages down
-    - Garbage-time cameos don't inflate or deflate projections
-    - The L5/L10 windows reflect actual full games played
-    """
     rows = (
         db.query(PlayerGameStats, Game)
         .join(Game, PlayerGameStats.game_id == Game.id)
@@ -409,7 +411,6 @@ def get_matchup_context(
         matchup_factor = _avg(factors) if factors else 1.0
         def_rank       = getattr(opp, f"pts_rank_{bucket}", None)
 
-    # ── Full defensive breakdown for this position bucket ─────────────────────
     def _get(stat, field):
         if not bucket:
             return None
@@ -425,7 +426,6 @@ def get_matchup_context(
         pace_factor    = pace_factor,
         matchup_factor = matchup_factor,
         matchup_grade  = _matchup_grade(def_rank),
-        # All 5 stats allowed to this position group
         pts_allowed    = _get("pts", "allowed"),
         reb_allowed    = _get("reb", "allowed"),
         ast_allowed    = _get("ast", "allowed"),
@@ -459,6 +459,9 @@ def project_player(
       4. Home/away factor (+3% at home)
       5. Rest/back-to-back factor (-5% on 0 days rest)
       6. Blowout risk factor (up to -8% based on Vegas spread)
+      7. Injury factor (usage redistribution when stars are out)
+      8. Recent form factor (hot hand adjustment)
+      9. Opponent strength factor (beyond position-specific)
     """
     if stat_type not in STAT_CONFIG:
         return None
@@ -470,7 +473,6 @@ def project_player(
     stat_col = STAT_CONFIG[stat_type][0]
     values   = get_player_stat_lines(db, player_id, stat_col, min_minutes=min_minutes)
 
-    # Need at least 3 qualifying games to make a meaningful projection
     if len(values) < 3:
         return None
 
@@ -485,21 +487,20 @@ def project_player(
     matchup  = None
     adjusted = base
 
-    # Default all situational factors to neutral
     home_factor    = 1.0
     rest_factor    = 1.0
     blowout_factor = 1.0
+    injury_factor  = 1.0
+    form_factor    = 1.0
+    opp_strength   = 1.0
 
     if opp_team_id:
         matchup = get_matchup_context(db, player, opp_team_id, stat_type)
         if matchup:
-            # Cap both factors to prevent runaway projections
             pace_factor    = max(PACE_FACTOR_MIN,    min(PACE_FACTOR_MAX,    matchup.pace_factor))
             matchup_factor = max(MATCHUP_FACTOR_MIN, min(MATCHUP_FACTOR_MAX, matchup.matchup_factor))
             adjusted = base * pace_factor * matchup_factor
 
-        # ── Find the game in DB to determine home/away ────────────────────
-        # Look up the next scheduled game between these two teams
         if not game_id:
             from datetime import date as date_type
             upcoming = (
@@ -515,18 +516,24 @@ def project_player(
             if upcoming:
                 game_id = upcoming.id
 
-        # ── Situational adjustments ───────────────────────────────────────
-        # Home/away: +3% at home court
         home_factor    = _home_away_factor(db, player, game_id)
-
-        # Back-to-back: -5% on 0 days rest
         rest_factor    = _rest_factor(db, player)
-
-        # Blowout risk: use Vegas spread from odds lines if available,
-        # fall back to point differential estimate
         blowout_factor = _blowout_factor_vegas(db, player, opp_team_id, game_id)
+        
+        from datetime import date as date_type
+        injury_factor  = calculate_injury_impact_factor(db, player_id, game_date=date_type.today())
+        form_factor    = _recent_form_factor(values)
+        opp_strength   = _opponent_strength_factor(db, opp_team_id)
 
-        adjusted = adjusted * home_factor * rest_factor * blowout_factor
+        adjusted = (
+            adjusted 
+            * home_factor 
+            * rest_factor 
+            * blowout_factor
+            * injury_factor
+            * form_factor
+            * opp_strength
+        )
 
     recent = values[:STD_WINDOW]
     std    = _std_dev(recent)
@@ -550,11 +557,6 @@ def project_player(
 
     team = db.query(Team).filter(Team.id == player.team_id).first()
 
-    # Collect final adjustment factors for transparency in the API response
-    _home   = home_factor   if opp_team_id else 1.0
-    _rest   = rest_factor   if opp_team_id else 1.0
-    _blowout = blowout_factor if opp_team_id else 1.0
-
     return Projection(
         player_id    = player.id,
         player_name  = player.name,
@@ -570,10 +572,13 @@ def project_player(
         floor        = round(adjusted - std, 2),
         ceiling      = round(adjusted + std, 2),
         matchup      = matchup,
-        home_factor     = round(_home, 3),
-        rest_factor     = round(_rest, 3),
-        blowout_factor  = round(_blowout, 3),
-        is_back_to_back = (_rest < 1.0),
+        home_factor     = round(home_factor, 3),
+        rest_factor     = round(rest_factor, 3),
+        blowout_factor  = round(blowout_factor, 3),
+        injury_factor   = round(injury_factor, 3),
+        form_factor     = round(form_factor, 3),
+        opp_strength    = round(opp_strength, 3),
+        is_back_to_back = (rest_factor < 1.0),
         line         = line,
         edge_pct     = round(edge_pct, 2)         if edge_pct   is not None else None,
         over_prob    = round(over_prob * 100, 1)   if over_prob  is not None else None,

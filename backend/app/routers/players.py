@@ -70,6 +70,15 @@ def _projection_to_dict(proj) -> dict:
         "over_prob":       proj.over_prob,
         "under_prob":      proj.under_prob,
         "recommendation":  proj.recommendation,
+        "adjustments": {
+            "home_factor":     proj.home_factor,
+            "rest_factor":     proj.rest_factor,
+            "blowout_factor":  proj.blowout_factor,
+            "injury_factor":   proj.injury_factor,
+            "form_factor":     proj.form_factor,
+            "opp_strength":    proj.opp_strength,
+            "is_back_to_back": proj.is_back_to_back,
+        },
     }
 
 
