@@ -1,18 +1,15 @@
 # backend/app/services/odds_fetcher.py
 """
-Odds API fetcher — pulls NBA player prop lines and saves to the DB.
+Odds API fetcher — pulls NBA player prop lines and game lines, saves to DB.
+
+Enhanced to include:
+  - Player props: points, rebounds, assists, steals, blocks, threes, PR, PA, PRA
+  - Game lines: spread, total, moneyline
 
 Credit-efficient design for 500 credits/month:
   - Checks today first, then up to 3 days ahead for upcoming games
-  - Only pulls 3 markets: player_points, player_rebounds, player_assists
   - Upserts into odds_lines table (no duplicates)
   - Scheduled twice daily at midnight and noon PST (08:00 and 20:00 UTC)
-
-Odds API cost breakdown:
-  - 1 request to get upcoming events list (1 credit)
-  - 1 request per game for props (~1 credit/game)
-  - 5 games/day × 2 fetches × ~2 credits = ~20 credits/day
-  - Well within 500/month limit
 """
 
 import httpx
@@ -35,11 +32,22 @@ SPORT           = "basketball_nba"
 REGIONS         = "us"         # us = FanDuel, DraftKings, BetMGM, etc.
 ODDS_FORMAT     = "american"
 
-# Markets to pull — each adds ~1 credit per event, keep this list short
+# Markets to pull — each adds ~1 credit per event
 MARKETS = [
+    # Player props
     "player_points",
     "player_rebounds",
     "player_assists",
+    "player_blocks",
+    "player_steals",
+    "player_threes",
+    "player_points_rebounds",
+    "player_points_assists",
+    "player_points_rebounds_assists",
+    # Game lines
+    "spreads",
+    "totals",
+    "h2h",  # moneyline
 ]
 
 # Map Odds API market name → our stat_type
@@ -47,9 +55,19 @@ MARKET_TO_STAT = {
     "player_points":   "points",
     "player_rebounds": "rebounds",
     "player_assists":  "assists",
+    "player_blocks":   "blocks",
+    "player_steals":   "steals",
+    "player_threes":   "threes",
+    "player_points_rebounds": "pr",
+    "player_points_assists": "pa",
+    "player_points_rebounds_assists": "pra",
+    # Game lines (handled separately)
+    "spreads": "spread",
+    "totals": "total",
+    "h2h": "moneyline",
 }
 
-# Sportsbooks we care about — filter to just these to keep response small
+# Sportsbooks we care about
 TARGET_BOOKS = {
     "fanduel", "draftkings", "betmgm", "bet365",
     "williamhill_us", "pointsbetus", "bovada",
@@ -64,31 +82,6 @@ def _normalize(name: str) -> str:
     name = "".join(c for c in name if not unicodedata.combining(c))
     return name.lower().strip()
 
-
-def _find_player(db: Session, odds_name: str) -> Player | None:
-    """
-    Match an Odds API player name to a DB player.
-    Tries exact match first, then fuzzy match on normalized names.
-    Caches all active players to avoid N+1 queries.
-    """
-    normalized = _normalize(odds_name)
-
-    # Load all active players once per call (cached via SQLAlchemy session)
-    players = db.query(Player).filter(Player.is_active == True).all()
-
-    # 1. Exact normalized match
-    for p in players:
-        if _normalize(p.name) == normalized:
-            return p
-
-    # 2. Fuzzy match — threshold 0.85 to avoid false positives
-    best_score  = 0.0
-    best_player = None
-    for p in players:
-        score = SequenceMatcher(None, _normalize(p.name), normalized).ratio()
-        if score > best_score:
-            best_score  = score
-            best_player = p
 
 def _find_player(db: Session, odds_name: str) -> Player | None:
     """
@@ -137,7 +130,7 @@ def _find_player(db: Session, odds_name: str) -> Player | None:
 # ── Core fetch logic ──────────────────────────────────────────────────────────
 def fetch_todays_odds(db: Session | None = None) -> dict:
     """
-    Main entry point. Fetches today's NBA prop lines and upserts into DB.
+    Main entry point. Fetches today's NBA prop lines and game lines, upserts into DB.
     Returns a summary dict: {games_processed, lines_saved, credits_used, errors}
     """
     close_db = False
@@ -149,6 +142,7 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
         "fetched_at":      datetime.now(timezone.utc).isoformat(),
         "games_processed": 0,
         "lines_saved":     0,
+        "game_lines_saved": 0,
         "credits_used":    0,
         "errors":          [],
     }
@@ -175,14 +169,10 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
 
             events = events_resp.json()
 
-            # The Odds API returns commence_time in UTC. A 7pm EST game on
-            # Feb 19 = midnight UTC Feb 20, so the API may report it one day
-            # ahead of our DB date. For each candidate day we collect events
-            # on that UTC date AND the next UTC date, then _find_game handles
-            # matching to the correct local DB date.
+            # Find games in next 4 days
             target_events = []
             target_date   = None
-            for days_ahead in range(4):   # 0=today, 1=tomorrow, 2, 3
+            for days_ahead in range(4):
                 check_date  = date.today() + timedelta(days=days_ahead)
                 next_date   = check_date + timedelta(days=1)
                 check_str   = check_date.isoformat()
@@ -237,9 +227,10 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
                     summary["credits_used"] += 1
 
                     data = props_resp.json()
-                    lines_saved = _parse_and_save(db, game, data)
-                    summary["lines_saved"]     += lines_saved
-                    summary["games_processed"] += 1
+                    player_lines, game_lines = _parse_and_save(db, game, data)
+                    summary["lines_saved"]      += player_lines
+                    summary["game_lines_saved"] += game_lines
+                    summary["games_processed"]  += 1
 
                 except httpx.HTTPStatusError as e:
                     err = f"{away_team} @ {home_team}: HTTP {e.response.status_code}"
@@ -262,11 +253,7 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
 def _find_game(db: Session, home_team: str, away_team: str, game_date: date | None = None) -> Game | None:
     """
     Match Odds API team names to our DB games.
-
-    The Odds API returns commence_time in UTC. A game that tips at 7pm EST
-    on Feb 19 has a UTC time of midnight Feb 20, so the Odds API reports it
-    as Feb 20 while our DB stores it as Feb 19 (local date). We check both
-    the target date AND the day before to handle this timezone shift.
+    Checks both target date and day before (UTC vs local date offset).
     """
     from app.models.player import Team
     from datetime import timedelta
@@ -296,12 +283,13 @@ def _find_game(db: Session, home_team: str, away_team: str, game_date: date | No
     return None
 
 
-def _parse_and_save(db: Session, game: Game, data: dict) -> int:
+def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     """
     Parse the Odds API event-odds response and upsert into odds_lines.
-    Returns number of lines saved.
+    Returns (player_lines_saved, game_lines_saved).
     """
-    saved = 0
+    player_lines_saved = 0
+    game_lines_saved = 0
     bookmakers = data.get("bookmakers", [])
 
     for book in bookmakers:
@@ -315,10 +303,14 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> int:
             if not stat_type:
                 continue
 
-            # Each outcome is one player's line
-            # Odds API groups over/under as two outcomes with same description
-            outcomes = market.get("outcomes", [])
+            # Handle game lines (spread, total, moneyline) separately
+            if stat_type in ["spread", "total", "moneyline"]:
+                game_lines_saved += _save_game_line(db, game, book_key, stat_type, market)
+                continue
 
+            # Handle player props
+            outcomes = market.get("outcomes", [])
+            
             # Build dict: player_name → {over_price, under_price, point}
             player_lines: dict[str, dict] = {}
             for outcome in outcomes:
@@ -351,7 +343,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> int:
                 if line is None:
                     continue
 
-                # Upsert — update if exists, insert if not
+                # Upsert player prop line
                 existing = db.query(OddsLine).filter(
                     OddsLine.player_id  == player.id,
                     OddsLine.game_id    == game.id,
@@ -374,10 +366,147 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> int:
                         over_odds   = over_odds,
                         under_odds  = under_odds,
                     ))
-                saved += 1
+                player_lines_saved += 1
 
     db.commit()
-    return saved
+    return player_lines_saved, game_lines_saved
+
+
+def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, market: dict) -> int:
+    """
+    Save game lines (spread, total, moneyline) to odds_lines table.
+    Uses player_id = NULL to indicate these are game lines, not player props.
+    """
+    outcomes = market.get("outcomes", [])
+    
+    if stat_type == "spread":
+        # Spread has two outcomes: home and away
+        for outcome in outcomes:
+            team_name = outcome.get("name", "")
+            point = outcome.get("point")  # e.g., -3.5 for favorite
+            price = outcome.get("price")  # e.g., -110
+            
+            if point is None:
+                continue
+            
+            # Determine if this is home or away team spread
+            is_home = _is_home_team(db, game, team_name)
+            
+            # Save as over_odds if home, under_odds if away (convention)
+            existing = db.query(OddsLine).filter(
+                OddsLine.player_id == None,
+                OddsLine.game_id == game.id,
+                OddsLine.stat_type == "spread",
+                OddsLine.sportsbook == book_key,
+            ).first()
+            
+            if existing:
+                if is_home:
+                    existing.line = point
+                    existing.over_odds = price
+                else:
+                    existing.under_odds = price
+                existing.fetched_at = datetime.now(timezone.utc)
+            else:
+                db.add(OddsLine(
+                    player_id=None,
+                    game_id=game.id,
+                    stat_type="spread",
+                    sportsbook=book_key,
+                    line=point if is_home else -point,
+                    over_odds=price if is_home else None,
+                    under_odds=None if is_home else price,
+                ))
+            return 1
+    
+    elif stat_type == "total":
+        # Total has over/under
+        total_line = None
+        over_odds = None
+        under_odds = None
+        
+        for outcome in outcomes:
+            name = outcome.get("name", "")
+            point = outcome.get("point")
+            price = outcome.get("price")
+            
+            if point is not None:
+                total_line = point
+                if name == "Over":
+                    over_odds = price
+                elif name == "Under":
+                    under_odds = price
+        
+        if total_line is not None:
+            existing = db.query(OddsLine).filter(
+                OddsLine.player_id == None,
+                OddsLine.game_id == game.id,
+                OddsLine.stat_type == "total",
+                OddsLine.sportsbook == book_key,
+            ).first()
+            
+            if existing:
+                existing.line = total_line
+                existing.over_odds = over_odds
+                existing.under_odds = under_odds
+                existing.fetched_at = datetime.now(timezone.utc)
+            else:
+                db.add(OddsLine(
+                    player_id=None,
+                    game_id=game.id,
+                    stat_type="total",
+                    sportsbook=book_key,
+                    line=total_line,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                ))
+            return 1
+    
+    elif stat_type == "moneyline":
+        # Moneyline has home and away odds
+        for outcome in outcomes:
+            team_name = outcome.get("name", "")
+            price = outcome.get("price")
+            
+            is_home = _is_home_team(db, game, team_name)
+            
+            existing = db.query(OddsLine).filter(
+                OddsLine.player_id == None,
+                OddsLine.game_id == game.id,
+                OddsLine.stat_type == "moneyline",
+                OddsLine.sportsbook == book_key,
+            ).first()
+            
+            if existing:
+                if is_home:
+                    existing.over_odds = price
+                else:
+                    existing.under_odds = price
+                existing.fetched_at = datetime.now(timezone.utc)
+            else:
+                db.add(OddsLine(
+                    player_id=None,
+                    game_id=game.id,
+                    stat_type="moneyline",
+                    sportsbook=book_key,
+                    line=0,  # No line for moneyline
+                    over_odds=price if is_home else None,
+                    under_odds=None if is_home else price,
+                ))
+            return 1
+    
+    return 0
+
+
+def _is_home_team(db: Session, game: Game, team_name: str) -> bool:
+    """Check if team_name matches the home team for this game."""
+    from app.models.player import Team
+    
+    home_team = db.query(Team).filter(Team.id == game.home_team_id).first()
+    if not home_team:
+        return False
+    
+    return SequenceMatcher(None, _normalize(home_team.name), _normalize(team_name)).ratio() >= 0.80
 
 
 # ── Standalone runner ─────────────────────────────────────────────────────────
@@ -386,8 +515,9 @@ if __name__ == "__main__":
     print("Fetching today's NBA odds...")
     result = fetch_todays_odds()
     print(f"\nResult:")
-    print(f"  Games processed: {result['games_processed']}")
-    print(f"  Lines saved:     {result['lines_saved']}")
-    print(f"  Credits used:    {result['credits_used']}")
+    print(f"  Games processed:    {result['games_processed']}")
+    print(f"  Player lines saved: {result['lines_saved']}")
+    print(f"  Game lines saved:   {result['game_lines_saved']}")
+    print(f"  Credits used:       {result['credits_used']}")
     if result["errors"]:
-        print(f"  Errors:          {result['errors']}")
+        print(f"  Errors:             {result['errors']}")

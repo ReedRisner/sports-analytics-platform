@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import date, timedelta
 
 from app.database import get_db
-from app.models.player import Player, Team, Game, PlayerGameStats
+from app.models.player import Player, Team, Game, PlayerGameStats, OddsLine
 from app.services.projection_engine import (
     project_player,
     get_matchup_context,
@@ -242,6 +242,86 @@ def game_top_props(
 
     results.sort(key=lambda x: x["projected"], reverse=True)
     return {"game_id": game_id, "stat_type": stat_type, "players": results[:top_n]}
+
+
+# ── GET /games/{game_id}/best-bets ────────────────────────────────────────────
+@router.get("/{game_id}/best-bets")
+def game_best_bets(
+    game_id: int,
+    limit: int = Query(5, le=20, description="Number of best bets to return"),
+    min_edge: float = Query(3.0, description="Minimum edge percentage"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the top player prop bets for a specific game.
+    Returns bets sorted by edge percentage (highest first).
+    Only includes bets from odds lines that exist for this game.
+    """
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Get all odds lines for this game (FanDuel only)
+    lines = db.query(OddsLine).filter(
+        OddsLine.game_id == game_id,
+        OddsLine.sportsbook == 'fanduel'
+    ).all()
+    
+    bets = []
+    
+    for ol in lines:
+        # Get player info
+        player = db.query(Player).filter(Player.id == ol.player_id).first()
+        if not player:
+            continue
+        
+        # Determine opponent
+        if game.home_team_id == player.team_id:
+            opp_team_id = game.away_team_id
+        else:
+            opp_team_id = game.home_team_id
+        
+        # Run projection with line
+        proj = project_player(
+            db=db,
+            player_id=ol.player_id,
+            stat_type=ol.stat_type,
+            opp_team_id=opp_team_id,
+            line=ol.line
+        )
+        
+        if not proj or not proj.edge_pct:
+            continue
+        
+        # Filter by minimum edge
+        if abs(proj.edge_pct) < min_edge:
+            continue
+        
+        team = db.query(Team).filter(Team.id == player.team_id).first()
+        
+        bets.append({
+            "player_id": player.id,
+            "player_name": player.name,
+            "team_abbr": team.abbreviation if team else "?",
+            "position": player.position,
+            "stat_type": ol.stat_type,
+            "line": ol.line,
+            "projected": proj.projected,
+            "edge_pct": proj.edge_pct,
+            "over_prob": proj.over_prob,
+            "under_prob": proj.under_prob,
+            "recommendation": proj.recommendation,
+            "matchup_grade": proj.matchup.matchup_grade if proj.matchup else None,
+        })
+    
+    # Sort by absolute edge (highest first)
+    bets.sort(key=lambda x: abs(x["edge_pct"]), reverse=True)
+    
+    return {
+        "game_id": game_id,
+        "count": len(bets),
+        "bets": bets[:limit]
+    }
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────

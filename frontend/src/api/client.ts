@@ -11,7 +11,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 10000, // 10 second timeout
+  timeout: 30000, // 30 second timeout (increased for slow endpoints)
 })
 
 /**
@@ -50,7 +50,12 @@ apiClient.interceptors.response.use(
       
       // Don't log 404s for endpoints we know don't exist yet
       if (!is404 || !isExpectedMissing) {
-        console.error('API Error:', error.response?.data || error.message)
+        // Show which endpoint timed out or errored
+        const url = error.config?.url || 'unknown'
+        const message = error.code === 'ECONNABORTED' 
+          ? `Timeout after ${error.config?.timeout}ms` 
+          : error.message
+        console.error(`API Error [${url}]:`, error.response?.data || message)
       }
     }
     
