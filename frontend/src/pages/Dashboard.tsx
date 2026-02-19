@@ -23,7 +23,7 @@ export default function Dashboard() {
 
   // Filter out steals and blocks
   const filteredEdges = edges.filter((edge: Edge) => 
-    edge.stat_type !== 'steals' && edge.stat_type !== 'blocks'
+    edge.stat_type !== 'steals' && edge.stat_type !== 'blocks' && edge.stat_type !== 'threes'
   )
 
   // Get top 10 bets sorted by absolute edge percentage (across ALL stats)
