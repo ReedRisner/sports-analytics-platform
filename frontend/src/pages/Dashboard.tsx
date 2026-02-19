@@ -21,12 +21,17 @@ export default function Dashboard() {
     ? edgesResponse 
     : (edgesResponse as any)?.edges || []
 
+  // Filter out steals and blocks
+  const filteredEdges = edges.filter((edge: Edge) => 
+    edge.stat_type !== 'steals' && edge.stat_type !== 'blocks'
+  )
+
   // Get top 10 bets sorted by absolute edge percentage (across ALL stats)
-  const topBets = edges
+  const topBets = filteredEdges
     .sort((a: Edge, b: Edge) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
     .slice(0, 10)
 
-  const totalBetsFound = edges.length
+  const totalBetsFound = filteredEdges.length
 
   return (
     <div className="space-y-10 pb-12">
