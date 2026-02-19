@@ -174,34 +174,64 @@ def edge_finder(
     db: Session = Depends(get_db),
 ):
     """
-    Placeholder for the edge finder.
-    Will be powered once odds lines are stored in the database.
-    Returns top projections for today sorted by matchup grade
-    as a proxy for edge until lines are integrated.
+    Optimized edge finder.
+    Preloads teams and players once to avoid thousands of repeated DB hits.
+    Returns top projections sorted by matchup favorability.
     """
+
     game_date = _next_game_date_with_odds(db)
     if not game_date:
         return {"edges": [], "message": "No games found"}
 
+    # ── Load today's games ─────────────────────────────────────────────
     games = db.query(Game).filter(Game.date == game_date).all()
+    if not games:
+        return {"edges": [], "message": "No games found for date"}
 
+    # ── Preload all teams once (used inside projections repeatedly) ────
+    teams = {t.id: t for t in db.query(Team).all()}
+
+    # ── Collect all team IDs playing today ─────────────────────────────
+    team_ids_today = set()
+    for g in games:
+        team_ids_today.add(g.home_team_id)
+        team_ids_today.add(g.away_team_id)
+
+    # ── Preload active players for ALL teams playing today ─────────────
+    players = db.query(Player).filter(
+        Player.team_id.in_(team_ids_today),
+        Player.is_active == True,
+    ).all()
+
+    # Group players by team_id for fast lookup
+    players_by_team = {}
+    for p in players:
+        players_by_team.setdefault(p.team_id, []).append(p)
+
+    # ── Build projections ───────────────────────────────────────────────
     results = []
+
     for game in games:
-        for team_id, opp_id in [
+        matchups = [
             (game.home_team_id, game.away_team_id),
             (game.away_team_id, game.home_team_id),
-        ]:
-            players = db.query(Player).filter(
-                Player.team_id == team_id,
-                Player.is_active == True,
-            ).all()
+        ]
 
-            for player in players:
+        for team_id, opp_id in matchups:
+
+            team_players = players_by_team.get(team_id, [])
+            if not team_players:
+                continue
+
+            for player in team_players:
+
+                # Project only points for now (same as your original)
                 proj = project_player(db, player.id, "points", opp_id)
+
                 if not proj or proj.projected <= 0:
                     continue
 
-                # Score the matchup quality (lower def_rank = easier matchup)
+                # Score matchup quality
                 rank = proj.matchup.def_rank if proj.matchup else 15
                 matchup_score = (30 - rank) if rank else 0
 
@@ -210,13 +240,17 @@ def edge_finder(
                     "matchup_score": matchup_score,
                 })
 
-    # Sort by matchup score (best matchup first) then projected
-    results.sort(key=lambda x: (x["matchup_score"], x["projected"]), reverse=True)
+    # ── Sort results ────────────────────────────────────────────────────
+    results.sort(
+        key=lambda x: (x["matchup_score"], x["projected"]),
+        reverse=True,
+    )
+
     return {
-        "date":    str(game_date),
-        "note":    "Edge % will populate once odds lines are integrated. Sorted by matchup favorability.",
-        "count":   len(results),
-        "edges":   results[:50],
+        "date":  str(game_date),
+        "note":  "Edge % will populate once odds lines are integrated. Sorted by matchup favorability.",
+        "count": len(results),
+        "edges": results[:50],
     }
 
 
