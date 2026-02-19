@@ -72,6 +72,7 @@ STAT_CONFIG = {
     'assists':  ('assists',  'ast'),
     'steals':   ('steals',   'stl'),
     'blocks':   ('blocks',   'blk'),
+    'threes':   ('fg3m', 'three_pointers_made'),  # ✅ ADD THIS
     'pra':      ('pra',      None),
     'pr':       ('pr',       None),
     'pa':       ('pa',       None),

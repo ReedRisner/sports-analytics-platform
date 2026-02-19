@@ -49,13 +49,14 @@ BUCKET_COL = {
     'C':  'c',
 }
 
-STAT_COLS = ['pts', 'ast', 'reb', 'stl', 'blk']
+STAT_COLS = ['pts', 'ast', 'reb', 'stl', 'blk', 'three_pointers_made']
 STAT_DF_COLS = {
     'pts': 'PTS',
     'ast': 'AST',
     'reb': 'REB',
     'stl': 'STL',
     'blk': 'BLK',
+    'three_pointers_made': 'THREES',
 }
 
 
@@ -321,11 +322,11 @@ def fetch_defensive_stats_by_position(season="2025-26"):
         df['OPP_TEAM_ID'] = df['MATCHUP'].apply(get_opp_id)
         df = df[df['OPP_TEAM_ID'].notna()].copy()
 
-        for col in ['PTS', 'AST', 'REB', 'STL', 'BLK']:
+        for col in ['PTS', 'AST', 'REB', 'STL', 'BLK', 'FG3M']:  # ✅ ADD FG3M
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
         # ── Compute per-team, per-bucket averages ───────────────────────────
-        grouped = df.groupby(['OPP_TEAM_ID', 'POS_BUCKET'])[['PTS', 'AST', 'REB', 'STL', 'BLK']].mean().reset_index()
+        grouped = df.groupby(['OPP_TEAM_ID', 'POS_BUCKET'])[['PTS', 'AST', 'REB', 'STL', 'BLK', 'FG3M']].mean().reset_index()
 
         # Build a dict: team_id → {bucket → {stat → avg}}
         team_avgs = {}
@@ -340,6 +341,7 @@ def fetch_defensive_stats_by_position(season="2025-26"):
                 'reb': safe_float(row['REB']),
                 'stl': safe_float(row['STL']),
                 'blk': safe_float(row['BLK']),
+                'three_pointers_made': safe_float(row['FG3M']),  # ✅ ADD THIS
             }
 
         # Write averages to DB
