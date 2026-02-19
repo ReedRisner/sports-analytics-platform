@@ -24,22 +24,31 @@ interface Game {
   away_score: number | null
   home_team: Team
   away_team: Team
-  spread?: {
-    home_spread: number
-    away_spread: number
-    odds: number
-  }
-  total?: {
-    over_under: number
-    over_odds: number
-    under_odds: number
-  }
 }
 
 interface GamesResponse {
   date: string
   games: Game[]
   count: number
+}
+
+interface GameLines {
+  game_id: number
+  sportsbook: string
+  spread: {
+    line: number
+    home_odds: number
+    away_odds: number
+  } | null
+  total: {
+    line: number
+    over_odds: number
+    under_odds: number
+  } | null
+  moneyline: {
+    home_odds: number
+    away_odds: number
+  } | null
 }
 
 interface GameBet {
@@ -77,6 +86,17 @@ export default function MatchupsPage() {
   })
 
   const games = gamesResponse?.games || []
+
+  // Fetch game lines for selected game
+  const { data: gameLines } = useQuery<GameLines | null>({
+    queryKey: ['game-lines', selectedGame],
+    queryFn: async () => {
+      if (!selectedGame) return null
+      const { data } = await apiClient.get<GameLines>(`/odds/game-lines/${selectedGame}`)
+      return data
+    },
+    enabled: !!selectedGame,
+  })
 
   // Fetch best bets for selected game
   const { data: gameBetsResponse, isLoading: betsLoading } = useQuery<GameBetsResponse>({
@@ -149,16 +169,6 @@ export default function MatchupsPage() {
                   <div className="font-bold text-lg">{game.away_team.abbreviation}</div>
                   <div className="text-sm text-muted-foreground">{game.away_team.record}</div>
                 </div>
-                {game.spread && (
-                  <div className="text-right">
-                    <div className="font-mono font-semibold">
-                      {game.spread.away_spread > 0 ? '+' : ''}{game.spread.away_spread}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      ({game.spread.odds > 0 ? '+' : ''}{game.spread.odds})
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Home Team */}
@@ -167,27 +177,7 @@ export default function MatchupsPage() {
                   <div className="font-bold text-lg">{game.home_team.abbreviation}</div>
                   <div className="text-sm text-muted-foreground">{game.home_team.record}</div>
                 </div>
-                {game.spread && (
-                  <div className="text-right">
-                    <div className="font-mono font-semibold">
-                      {game.spread.home_spread > 0 ? '+' : ''}{game.spread.home_spread}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      ({game.spread.odds > 0 ? '+' : ''}{game.spread.odds})
-                    </div>
-                  </div>
-                )}
               </div>
-
-              {/* Over/Under */}
-              {game.total && (
-                <div className="pt-3 border-t border-border/50">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">O/U</span>
-                    <span className="font-mono font-semibold">{game.total.over_under}</span>
-                  </div>
-                </div>
-              )}
 
               {/* Status Badge */}
               {game.status === 'live' && (
@@ -231,7 +221,7 @@ export default function MatchupsPage() {
             </div>
 
             {/* Teams */}
-            <div className="grid grid-cols-2 gap-8 mb-6">
+            <div className="grid grid-cols-3 gap-8 mb-6">
               {/* Away Team */}
               <div className="text-center">
                 <div className="text-3xl font-black mb-2">{selectedGameData.away_team.abbreviation}</div>
@@ -254,44 +244,64 @@ export default function MatchupsPage() {
 
             {/* Game Lines */}
             <div className="pt-6 border-t border-border">
-              <div className="text-sm text-muted-foreground mb-4 text-center">Game Lines</div>
-              <div className="grid grid-cols-2 gap-4">
-                {selectedGameData.spread ? (
-                  <div className="text-center">
-                    <div className="text-sm text-muted-foreground mb-2">Spread</div>
-                    <div className="font-mono font-bold text-lg">
-                      {selectedGameData.home_team.abbreviation} {selectedGameData.spread.home_spread > 0 ? '+' : ''}{selectedGameData.spread.home_spread}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      ({selectedGameData.spread.odds > 0 ? '+' : ''}{selectedGameData.spread.odds})
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <div className="text-sm text-muted-foreground mb-2">Spread</div>
+              <div className="text-sm font-semibold mb-4 text-center">Game Lines</div>
+              <div className="grid grid-cols-3 gap-4">
+                {/* Spread */}
+                <div className="text-center p-4 rounded-lg bg-muted/30">
+                  <div className="text-xs text-muted-foreground mb-2 uppercase">Spread</div>
+                  {gameLines?.spread ? (
+                    <>
+                      <div className="font-mono font-bold text-lg">
+                        {selectedGameData.home_team.abbreviation} {gameLines.spread.line > 0 ? '+' : ''}{gameLines.spread.line}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        ({gameLines.spread.home_odds > 0 ? '+' : ''}{gameLines.spread.home_odds})
+                      </div>
+                    </>
+                  ) : (
                     <div className="text-sm text-muted-foreground">N/A</div>
-                  </div>
-                )}
-                {selectedGameData.total ? (
-                  <div className="text-center">
-                    <div className="text-sm text-muted-foreground mb-2">Total</div>
-                    <div className="font-mono font-bold text-lg">
-                      O/U {selectedGameData.total.over_under}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      O: {selectedGameData.total.over_odds} / U: {selectedGameData.total.under_odds}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <div className="text-sm text-muted-foreground mb-2">Total</div>
+                  )}
+                </div>
+
+                {/* Total */}
+                <div className="text-center p-4 rounded-lg bg-muted/30">
+                  <div className="text-xs text-muted-foreground mb-2 uppercase">Total</div>
+                  {gameLines?.total ? (
+                    <>
+                      <div className="font-mono font-bold text-lg">
+                        O/U {gameLines.total.line}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        O: {gameLines.total.over_odds} / U: {gameLines.total.under_odds}
+                      </div>
+                    </>
+                  ) : (
                     <div className="text-sm text-muted-foreground">N/A</div>
-                  </div>
-                )}
+                  )}
+                </div>
+
+                {/* Moneyline */}
+                <div className="text-center p-4 rounded-lg bg-muted/30">
+                  <div className="text-xs text-muted-foreground mb-2 uppercase">Moneyline</div>
+                  {gameLines?.moneyline ? (
+                    <div className="space-y-1">
+                      <div className="font-mono text-sm">
+                        {selectedGameData.home_team.abbreviation}: {gameLines.moneyline.home_odds > 0 ? '+' : ''}{gameLines.moneyline.home_odds}
+                      </div>
+                      <div className="font-mono text-sm">
+                        {selectedGameData.away_team.abbreviation}: {gameLines.moneyline.away_odds > 0 ? '+' : ''}{gameLines.moneyline.away_odds}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">N/A</div>
+                  )}
+                </div>
               </div>
-              <p className="text-xs text-muted-foreground text-center mt-4">
-                💡 Game lines require odds data in database
-              </p>
+              {!gameLines?.spread && !gameLines?.total && !gameLines?.moneyline && (
+                <p className="text-xs text-muted-foreground text-center mt-4">
+                  💡 Run odds fetcher to populate game lines
+                </p>
+              )}
             </div>
           </div>
 
@@ -403,7 +413,7 @@ export default function MatchupsPage() {
                 </div>
               </div>
 
-              {/* Points Allowed */}
+              {/* Opponent Points Per Game */}
               <div>
                 <div className="flex items-center gap-2 text-sm mb-3">
                   <Shield className="w-4 h-4 text-red-400" />

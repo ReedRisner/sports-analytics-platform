@@ -71,14 +71,18 @@ export function GameLogChart({ games, statType, line }: GameLogChartProps) {
             stroke="hsl(var(--muted-foreground))"
             style={{ fontSize: 12 }}
           />
-          <Tooltip 
+
+          {/* ✅ ONLY CHANGE: force solid tooltip background */}
+          <Tooltip
+            wrapperStyle={{ backgroundColor: '#0f172a' }} 
             contentStyle={{ 
-              backgroundColor: 'hsl(var(--card))',
-              border: '1px solid hsl(var(--border))',
+              backgroundColor: '#0f172a',   // fully solid
+              border: '1px solid #1e293b',
               borderRadius: '8px',
+              opacity: 1,
             }}
-            labelStyle={{ color: 'hsl(var(--foreground))' }}
-            itemStyle={{ color: 'hsl(var(--primary))' }}
+            labelStyle={{ color: '#ffffff' }}
+            itemStyle={{ color: '#ffffff' }}
           />
           
           {/* Reference line for the betting line */}

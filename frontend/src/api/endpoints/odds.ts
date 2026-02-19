@@ -21,7 +21,7 @@ export const oddsAPI = {
         min_edge_pct: minEdgePct,
         position,
       },
-      timeout: 60000, // 30 second timeout for edge finder
+      timeout: 60000, // 60 second timeout for edge finder
     })
     // Backend returns { edges: [...] }, extract the array
     return Array.isArray(data) ? data : data.edges || []
@@ -56,6 +56,16 @@ export const oddsAPI = {
    */
   getLineMovement: async (oddsLineId: number) => {
     const { data } = await apiClient.get(`/odds/line-movement/${oddsLineId}`)
+    return data
+  },
+
+  /**
+   * Get game lines (spread, total, moneyline) for a specific game
+   */
+  getGameLines: async (gameId: number, sportsbook: string = 'fanduel') => {
+    const { data } = await apiClient.get(`/odds/game-lines/${gameId}`, {
+      params: { sportsbook },
+    })
     return data
   },
 }

@@ -376,11 +376,19 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
     """
     Save game lines (spread, total, moneyline) to odds_lines table.
     Uses player_id = NULL to indicate these are game lines, not player props.
+    Stores both home and away in a single record.
     """
+    from app.models.player import Team
+    
     outcomes = market.get("outcomes", [])
     
     if stat_type == "spread":
         # Spread has two outcomes: home and away
+        home_spread = None
+        away_spread = None
+        home_odds = None
+        away_odds = None
+        
         for outcome in outcomes:
             team_name = outcome.get("name", "")
             point = outcome.get("point")  # e.g., -3.5 for favorite
@@ -392,7 +400,15 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
             # Determine if this is home or away team spread
             is_home = _is_home_team(db, game, team_name)
             
-            # Save as over_odds if home, under_odds if away (convention)
+            if is_home:
+                home_spread = point
+                home_odds = price
+            else:
+                away_spread = point
+                away_odds = price
+        
+        # Save single record with both home and away
+        if home_spread is not None and away_spread is not None:
             existing = db.query(OddsLine).filter(
                 OddsLine.player_id == None,
                 OddsLine.game_id == game.id,
@@ -401,11 +417,9 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
             ).first()
             
             if existing:
-                if is_home:
-                    existing.line = point
-                    existing.over_odds = price
-                else:
-                    existing.under_odds = price
+                existing.line = home_spread  # Use home spread as primary
+                existing.over_odds = home_odds
+                existing.under_odds = away_odds
                 existing.fetched_at = datetime.now(timezone.utc)
             else:
                 db.add(OddsLine(
@@ -413,10 +427,11 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
                     game_id=game.id,
                     stat_type="spread",
                     sportsbook=book_key,
-                    line=point if is_home else -point,
-                    over_odds=price if is_home else None,
-                    under_odds=None if is_home else price,
+                    line=home_spread,
+                    over_odds=home_odds,
+                    under_odds=away_odds,
                 ))
+            db.commit()
             return 1
     
     elif stat_type == "total":
@@ -460,16 +475,27 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
                     over_odds=over_odds,
                     under_odds=under_odds,
                 ))
+            db.commit()
             return 1
     
     elif stat_type == "moneyline":
         # Moneyline has home and away odds
+        home_odds = None
+        away_odds = None
+        
         for outcome in outcomes:
             team_name = outcome.get("name", "")
             price = outcome.get("price")
             
             is_home = _is_home_team(db, game, team_name)
             
+            if is_home:
+                home_odds = price
+            else:
+                away_odds = price
+        
+        # Save single record with both home and away
+        if home_odds is not None and away_odds is not None:
             existing = db.query(OddsLine).filter(
                 OddsLine.player_id == None,
                 OddsLine.game_id == game.id,
@@ -478,10 +504,8 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
             ).first()
             
             if existing:
-                if is_home:
-                    existing.over_odds = price
-                else:
-                    existing.under_odds = price
+                existing.over_odds = home_odds
+                existing.under_odds = away_odds
                 existing.fetched_at = datetime.now(timezone.utc)
             else:
                 db.add(OddsLine(
@@ -490,13 +514,13 @@ def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, mark
                     stat_type="moneyline",
                     sportsbook=book_key,
                     line=0,  # No line for moneyline
-                    over_odds=price if is_home else None,
-                    under_odds=None if is_home else price,
+                    over_odds=home_odds,
+                    under_odds=away_odds,
                 ))
+            db.commit()
             return 1
     
     return 0
-
 
 def _is_home_team(db: Session, game: Game, team_name: str) -> bool:
     """Check if team_name matches the home team for this game."""
