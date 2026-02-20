@@ -18,17 +18,16 @@ export default function PlayerPage() {
   const [gameLogFilter, setGameLogFilter] = useState<'l5' | 'l10' | 'vs_opp'>('l10')
   const [runMonteCarlo, setRunMonteCarlo] = useState(false) // Manual trigger
 
-  // Fetch player projection from /projections/today
+  // Fetch player projection from dedicated single-player endpoint (much faster than /projections/today)
   const { data: projection, isLoading: projLoading, error: projError } = useQuery({
     queryKey: ['player-projection', playerId, selectedStat],
     queryFn: async () => {
       try {
-        const { data } = await apiClient.get('/projections/today', {
+        const { data } = await apiClient.get(`/players/${playerId}/projection`, {
           params: { stat_type: selectedStat },
-          timeout: 30000,
+          timeout: 15000,
         })
-        const projections = Array.isArray(data) ? data : data.projections || []
-        return projections.find((p: any) => p.player_id === playerId)
+        return data
       } catch (error) {
         console.error('Error fetching player projection:', error)
         return null
@@ -36,6 +35,7 @@ export default function PlayerPage() {
     },
     enabled: !!playerId,
     retry: 1,
+    staleTime: 60_000,
   })
 
   // Fetch player odds
@@ -53,6 +53,7 @@ export default function PlayerPage() {
     },
     enabled: !!playerId,
     retry: 1,
+    staleTime: 60_000,
   })
 
   // Fetch Monte Carlo simulation if we have a line AND user clicked the button
@@ -536,6 +537,12 @@ export default function PlayerPage() {
               <div className="text-center p-3 rounded-lg bg-muted/50">
                 <div className="text-xs text-muted-foreground mb-1">Form</div>
                 <div className="text-lg font-bold font-mono">{projection.adjustments.form_factor.toFixed(2)}x</div>
+              </div>
+            )}
+            {projection.adjustments.injury_factor !== undefined && projection.adjustments.injury_factor !== 1 && (
+              <div className="text-center p-3 rounded-lg bg-muted/50">
+                <div className="text-xs text-muted-foreground mb-1">Injury</div>
+                <div className="text-lg font-bold font-mono">{projection.adjustments.injury_factor.toFixed(2)}x</div>
               </div>
             )}
             {projection.adjustments.opp_strength !== undefined && projection.adjustments.opp_strength !== 1 && (
