@@ -69,11 +69,20 @@ export default function AccuracyPage() {
   const [showStreakDetails, setShowStreakDetails] = useState(false)
 
   const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+  const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
+    const wins = bets.filter((bet) => bet.bet_result === 'win').length
+    const losses = bets.filter((bet) => bet.bet_result === 'loss').length
+    const pushes = bets.filter((bet) => bet.bet_result === 'push').length
+    const graded = wins + losses
+    const winRate = graded > 0 ? (wins / graded) * 100 : 0
 
-  const getResultColor = (result: string) => {
-    if (result === 'win') return 'text-green-400'
-    if (result === 'loss') return 'text-red-400'
-    return 'text-yellow-400'
+    return {
+      total: bets.length,
+      wins,
+      losses,
+      pushes,
+      winRate,
+    }
   }
 
   const renderTrackedBets = (bets: TrackedBet[], showStreak = false) => (
