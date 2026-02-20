@@ -3,7 +3,7 @@
 Odds API fetcher — pulls NBA player prop lines and game lines, saves to DB.
 
 Enhanced to include:
-  - Player props: points, rebounds, assists, steals, blocks, threes, PR, PA, PRA
+  - Player props: points, rebounds, assists, steals, blocks, threes, PR, PA, RA, PRA
   - Game lines: spread, total, moneyline
 
 Credit-efficient design for 500 credits/month:
@@ -43,6 +43,7 @@ MARKETS = [
     "player_threes",
     "player_points_rebounds",
     "player_points_assists",
+    "player_rebounds_assists",
     "player_points_rebounds_assists",
     # Game lines
     "spreads",
@@ -60,6 +61,7 @@ MARKET_TO_STAT = {
     "player_threes":   "threes",
     "player_points_rebounds": "pr",
     "player_points_assists": "pa",
+    "player_rebounds_assists": "ra",
     "player_points_rebounds_assists": "pra",
     # Game lines (handled separately)
     "spreads": "spread",
