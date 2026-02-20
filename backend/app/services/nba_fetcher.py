@@ -330,9 +330,7 @@ def fetch_defensive_stats_by_position(season="2025-26"):
 
         # Build a dict: team_id → {bucket → {stat → avg}}
         team_avgs = {}
-        for _, row in grouped.iterrows():
-            tid    = row['OPP_TEAM_ID']
-            bucket = row['POS_BUCKET']
+        for (tid, bucket), row in grouped.iterrows():
             if tid not in team_avgs:
                 team_avgs[tid] = {}
             team_avgs[tid][bucket] = {
