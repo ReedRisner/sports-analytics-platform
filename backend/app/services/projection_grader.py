@@ -38,6 +38,20 @@ def _stat_type_variants(stat_type: str) -> list[str]:
     return list(variants)
 
 
+def _dedupe_by_player_day(rows):
+    """Keep first row per player/day combination in a sorted list."""
+    deduped = []
+    seen = set()
+    for row in rows:
+        result, game = row[0], row[1]
+        key = (result.player_id, game.date)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
 def _to_probability(odds: Optional[int]) -> Optional[float]:
     if odds is None:
         return None
@@ -217,7 +231,7 @@ def calculate_model_accuracy(
     query = db.query(ProjectionResult).join(
         Game, ProjectionResult.game_id == Game.id
     ).filter(
-        ProjectionResult.stat_type.in_(stat_variants),
+        func.lower(ProjectionResult.stat_type).in_(stat_variants),
         Game.date >= cutoff_date,
         ProjectionResult.bet_result != None,
     )
@@ -262,7 +276,7 @@ def calculate_model_accuracy(
         (OddsLine.stat_type == ProjectionResult.stat_type) &
         (OddsLine.line == ProjectionResult.line_value)
     ).filter(
-        ProjectionResult.stat_type.in_(stat_variants),
+        func.lower(ProjectionResult.stat_type).in_(stat_variants),
         Game.date >= cutoff_date,
         ProjectionResult.bet_result != None,
     )
@@ -296,9 +310,11 @@ def calculate_model_accuracy(
             'no_vig_prob': no_vig_prob,
         }
 
+    sorted_by_edge = sorted(detailed_rows, key=lambda row: abs((row[0].edge_pct or 0)), reverse=True)
+    top_edge_rows = _dedupe_by_player_day(sorted_by_edge)[:10]
     top_edge_bets = [
         _base_bet_payload(row)
-        for row in sorted(detailed_rows, key=lambda row: abs((row[0].edge_pct or 0)), reverse=True)[:10]
+        for row in top_edge_rows
     ]
 
     streak_groups = {}
@@ -330,10 +346,19 @@ def calculate_model_accuracy(
         top_streaky_bets.append(payload)
 
     top_streaky_bets.sort(key=lambda bet: bet['streak_count'], reverse=True)
+    deduped_streaky = []
+    seen_streaky = set()
+    for bet in top_streaky_bets:
+        key = (bet['player_id'], bet['game_date'])
+        if key in seen_streaky:
+            continue
+        seen_streaky.add(key)
+        deduped_streaky.append(bet)
+    top_streaky_bets = deduped_streaky
     top_streaky_bets = top_streaky_bets[:10]
 
-    top_no_vig_bets = [
-        _base_bet_payload(row)
+    sorted_no_vig_rows = [
+        row
         for row in sorted(
             detailed_rows,
             key=lambda row: (_recommended_no_vig_probability(
@@ -348,7 +373,12 @@ def calculate_model_accuracy(
             row[5].under_odds if row[5] else None,
             row[0].recommendation,
         ) is not None
-    ][:10]
+    ]
+
+    top_no_vig_bets = [
+        _base_bet_payload(row)
+        for row in _dedupe_by_player_day(sorted_no_vig_rows)[:10]
+    ]
     
     total = len(results)
     wins = sum(1 for r in results if r.bet_result == 'win')

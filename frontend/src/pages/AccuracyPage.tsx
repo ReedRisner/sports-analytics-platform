@@ -53,60 +53,35 @@ interface TrackedBet {
   streak_type?: string
 }
 
+interface BetSummary {
+  total: number
+  wins: number
+  losses: number
+  pushes: number
+  winRate: number
+}
+
 export default function AccuracyPage() {
   const [statType, setStatType] = useState('points')
   const [daysBack, setDaysBack] = useState(30)
   const [minEdge, setMinEdge] = useState<number | null>(null)
 
   const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+  const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
+    const wins = bets.filter((bet) => bet.bet_result === 'win').length
+    const losses = bets.filter((bet) => bet.bet_result === 'loss').length
+    const pushes = bets.filter((bet) => bet.bet_result === 'push').length
+    const graded = wins + losses
+    const winRate = graded > 0 ? (wins / graded) * 100 : 0
 
-  const getResultColor = (result: string) => {
-    if (result === 'win') return 'text-green-400'
-    if (result === 'loss') return 'text-red-400'
-    return 'text-yellow-400'
+    return {
+      total: bets.length,
+      wins,
+      losses,
+      pushes,
+      winRate,
+    }
   }
-
-  const renderTrackedBets = (bets: TrackedBet[], showNoVig = false, showStreak = false) => (
-    <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/40 text-muted-foreground">
-          <tr>
-            <th className="text-left p-3">Player</th>
-            <th className="text-left p-3">Bet</th>
-            <th className="text-left p-3">Edge</th>
-            <th className="text-left p-3">Proj / Line / Actual</th>
-            {showNoVig && <th className="text-left p-3">No-Vig Prob</th>}
-            {showStreak && <th className="text-left p-3">Streak</th>}
-            <th className="text-left p-3">Result</th>
-            <th className="text-left p-3">Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bets.map((bet, index) => (
-            <tr key={`${bet.player_id}-${bet.stat_type}-${bet.game_date}-${index}`} className="border-t border-border">
-              <td className="p-3 font-medium">
-                {bet.player_name} <span className="text-muted-foreground">({bet.team_abbr})</span>
-              </td>
-              <td className="p-3">
-                {bet.recommendation} {bet.stat_type}
-              </td>
-              <td className="p-3 font-mono">
-                {bet.edge_pct > 0 ? '+' : ''}
-                {bet.edge_pct.toFixed(1)}%
-              </td>
-              <td className="p-3 font-mono">
-                {bet.projected.toFixed(1)} / {bet.line?.toFixed(1) ?? '-'} / {bet.actual.toFixed(1)}
-              </td>
-              {showNoVig && <td className="p-3">{bet.no_vig_prob != null ? `${(bet.no_vig_prob * 100).toFixed(1)}%` : '-'}</td>}
-              {showStreak && <td className="p-3">{bet.streak_count ? `${bet.streak_count}x ${bet.streak_type}` : '-'}</td>}
-              <td className={`p-3 font-semibold uppercase ${getResultColor(bet.bet_result)}`}>{bet.bet_result}</td>
-              <td className="p-3 text-muted-foreground">{bet.game_date}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
 
   // Fetch accuracy data
   const { data: accuracy, isLoading, error } = useQuery<AccuracyData>({
@@ -127,6 +102,9 @@ export default function AccuracyPage() {
   const accuracyTopEdgeBets = accuracy?.top_edge_bets ?? []
   const accuracyTopStreakyBets = accuracy?.top_streaky_bets ?? []
   const accuracyNoVigTopBets = accuracy?.top_no_vig_bets ?? []
+  const topEdgeSummary = summarizeTrackedBets(accuracyTopEdgeBets)
+  const topStreakSummary = summarizeTrackedBets(accuracyTopStreakyBets)
+  const topNoVigSummary = summarizeTrackedBets(accuracyNoVigTopBets)
 
   return (
     <div className="space-y-8 pb-12">
@@ -406,7 +384,14 @@ export default function AccuracyPage() {
           <section className="space-y-4">
             <h2 className="text-2xl font-bold tracking-tight">Best 10 Edge Bets ({sectionLabel})</h2>
             {accuracyTopEdgeBets.length > 0 ? (
-              renderTrackedBets(accuracyTopEdgeBets)
+              <div className="rounded-xl border border-border bg-card p-6">
+                <div className="text-sm text-muted-foreground">Winning Percentage</div>
+                <div className="mt-2 text-4xl font-black text-green-400">{topEdgeSummary.winRate.toFixed(1)}%</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {topEdgeSummary.wins} of {topEdgeSummary.wins + topEdgeSummary.losses} bets were right
+                  {topEdgeSummary.pushes > 0 && ` (${topEdgeSummary.pushes} pushes)`}
+                </div>
+              </div>
             ) : (
               <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
                 No graded edge bets found for this filter.
@@ -417,7 +402,14 @@ export default function AccuracyPage() {
           <section className="space-y-4">
             <h2 className="text-2xl font-bold tracking-tight">Top 10 Streaky Bets ({sectionLabel})</h2>
             {accuracyTopStreakyBets.length > 0 ? (
-              renderTrackedBets(accuracyTopStreakyBets, false, true)
+              <div className="rounded-xl border border-border bg-card p-6">
+                <div className="text-sm text-muted-foreground">Winning Percentage</div>
+                <div className="mt-2 text-4xl font-black text-green-400">{topStreakSummary.winRate.toFixed(1)}%</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {topStreakSummary.wins} of {topStreakSummary.wins + topStreakSummary.losses} bets were right
+                  {topStreakSummary.pushes > 0 && ` (${topStreakSummary.pushes} pushes)`}
+                </div>
+              </div>
             ) : (
               <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
                 No streak-based graded bets found for this filter.
@@ -428,7 +420,14 @@ export default function AccuracyPage() {
           <section className="space-y-4">
             <h2 className="text-2xl font-bold tracking-tight">No-Vig Odds Bets (Top 10, {sectionLabel})</h2>
             {accuracyNoVigTopBets.length > 0 ? (
-              renderTrackedBets(accuracyNoVigTopBets, true)
+              <div className="rounded-xl border border-border bg-card p-6">
+                <div className="text-sm text-muted-foreground">Winning Percentage</div>
+                <div className="mt-2 text-4xl font-black text-green-400">{topNoVigSummary.winRate.toFixed(1)}%</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {topNoVigSummary.wins} of {topNoVigSummary.wins + topNoVigSummary.losses} bets were right
+                  {topNoVigSummary.pushes > 0 && ` (${topNoVigSummary.pushes} pushes)`}
+                </div>
+              </div>
             ) : (
               <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
                 No no-vig graded bets found for this filter.
