@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import type { Edge } from '@/api/types'
 
 type BetResult = 'pending' | 'won' | 'lost' | 'push'
+type ParlayStrategy = 'edge' | 'streak' | 'vegas'
 
 interface ParlayRecommendation {
   id: string
   legs: Edge[]
   legCount: number
+  strategy: ParlayStrategy
   combinedOdds: number
   impliedWinRate: number
   correlationScore: number
@@ -22,7 +25,8 @@ interface TrackedParlay {
   result: BetResult
 }
 
-const STORAGE_KEY = 'trackedParlays'
+const TRACKER_STORAGE_KEY = 'trackedParlays'
+const BANKROLL_STORAGE_KEY = 'parlayBankroll'
 
 function americanToDecimal(odds: number) {
   if (!odds) return 1.91
@@ -36,8 +40,7 @@ function decimalToAmerican(decimal: number) {
 }
 
 function getLegOdds(leg: Edge) {
-  const isOver = leg.recommendation === 'OVER'
-  const rawOdds = isOver ? leg.over_odds : leg.under_odds
+  const rawOdds = leg.recommendation === 'OVER' ? leg.over_odds : leg.under_odds
   return rawOdds || -110
 }
 
@@ -46,37 +49,35 @@ function correlationBetween(a: Edge, b: Edge) {
 
   if (a.team_abbr === b.team_abbr) score += 0.4
   if (a.opp_abbr === b.opp_abbr && a.team_abbr === b.team_abbr) score += 0.2
-  if (a.stat_type === b.stat_type) score += 0.1
   if ((a.stat_type === 'assists' && b.stat_type === 'points') || (a.stat_type === 'points' && b.stat_type === 'assists')) score += 0.3
   if ((a.stat_type === 'rebounds' && b.stat_type === 'points') || (a.stat_type === 'points' && b.stat_type === 'rebounds')) score -= 0.1
 
   return score
 }
 
-function makeParlayCombo(edges: Edge[], size: number, seen = new Set<string>(), start = 0, current: Edge[] = [], combos: Edge[][] = []) {
+function makeParlayCombos(edges: Edge[], size: number, start = 0, current: Edge[] = [], combos: Edge[][] = []) {
   if (current.length === size) {
-    const id = current.map((e) => `${e.player_id}-${e.stat_type}-${e.recommendation}`).join('|')
-    if (!seen.has(id)) {
-      seen.add(id)
-      combos.push([...current])
-    }
+    combos.push([...current])
     return combos
   }
 
   for (let i = start; i < edges.length; i += 1) {
-    current.push(edges[i])
-    makeParlayCombo(edges, size, seen, i + 1, current, combos)
+    const edge = edges[i]
+    if (current.some((leg) => leg.player_id === edge.player_id)) continue
+
+    current.push(edge)
+    makeParlayCombos(edges, size, i + 1, current, combos)
     current.pop()
   }
 
   return combos
 }
 
-function toRecommendation(legs: Edge[]): ParlayRecommendation {
-  const decimalOdds = legs.reduce((product, leg) => product * americanToDecimal(getLegOdds(leg)), 1)
-  const impliedWinRate = legs.reduce((product, leg) => {
-    const legWinProb = leg.recommendation === 'OVER' ? leg.over_prob : leg.under_prob
-    return product * (Math.max(legWinProb || 50, 1) / 100)
+function buildRecommendation(legs: Edge[], strategy: ParlayStrategy): ParlayRecommendation {
+  const decimalOdds = legs.reduce((total, leg) => total * americanToDecimal(getLegOdds(leg)), 1)
+  const impliedWinRate = legs.reduce((total, leg) => {
+    const winRate = leg.recommendation === 'OVER' ? leg.over_prob : leg.under_prob
+    return total * (Math.max(winRate || 50, 1) / 100)
   }, 1)
 
   let correlationScore = 0
@@ -89,9 +90,10 @@ function toRecommendation(legs: Edge[]): ParlayRecommendation {
   const expectedValue = impliedWinRate * (decimalOdds - 1) - (1 - impliedWinRate)
 
   return {
-    id: legs.map((leg) => `${leg.player_id}-${leg.stat_type}`).join('-'),
+    id: `${strategy}-${legs.map((leg) => `${leg.player_id}-${leg.stat_type}`).join('-')}`,
     legs,
     legCount: legs.length,
+    strategy,
     combinedOdds: decimalToAmerican(decimalOdds),
     impliedWinRate,
     correlationScore,
@@ -105,61 +107,104 @@ function payout(stake: number, toWin: number, result: BetResult) {
   return 0
 }
 
+function strategyLabel(strategy: ParlayStrategy) {
+  if (strategy === 'edge') return 'Best Edge%'
+  if (strategy === 'streak') return 'Best Streak'
+  return 'Highest Vegas Odds'
+}
+
 export default function BetsPage() {
+  const navigate = useNavigate()
   const { data: edges = [], isLoading } = useEdgeFinder('', '', 4)
+
+  const [bankroll, setBankroll] = useState<number>(() => {
+    const raw = localStorage.getItem(BANKROLL_STORAGE_KEY)
+    const value = raw ? Number(raw) : 100
+    return Number.isFinite(value) && value >= 0 ? value : 100
+  })
+
   const [trackedParlays, setTrackedParlays] = useState<TrackedParlay[]>(() => {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(TRACKER_STORAGE_KEY)
     return raw ? JSON.parse(raw) : []
   })
+
+  const persistTracked = (next: TrackedParlay[]) => {
+    setTrackedParlays(next)
+    localStorage.setItem(TRACKER_STORAGE_KEY, JSON.stringify(next))
+  }
+
+  const saveBankroll = (value: number) => {
+    const normalized = Number.isFinite(value) && value >= 0 ? Number(value.toFixed(2)) : 0
+    setBankroll(normalized)
+    localStorage.setItem(BANKROLL_STORAGE_KEY, String(normalized))
+  }
+
+  const suggestedUnitStake = useMemo(() => {
+    if (bankroll <= 0) return 1
+    return Math.max(1, Number((bankroll * 0.02).toFixed(2)))
+  }, [bankroll])
 
   const candidateEdges = useMemo(
     () => edges
       .filter((edge) => edge.recommendation !== 'PASS')
       .sort((a, b) => ((b.expected_value || b.edge_pct) - (a.expected_value || a.edge_pct)))
-      .slice(0, 12),
+      .slice(0, 16),
     [edges]
   )
 
-  const bestByLegCount = useMemo(() => {
+  const parlaysByLegCount = useMemo(() => {
     const sizes = [2, 4, 6]
-    const output: Record<number, ParlayRecommendation[]> = {}
+    const output: Record<number, ParlayRecommendation[]> = { 2: [], 4: [], 6: [] }
 
     sizes.forEach((size) => {
-      if (candidateEdges.length < size) {
-        output[size] = []
-        return
-      }
+      if (candidateEdges.length < size) return
 
-      const combos = makeParlayCombo(candidateEdges, size)
-      output[size] = combos
-        .map(toRecommendation)
-        .sort((a, b) => (b.expectedValue + b.correlationScore * 0.04) - (a.expectedValue + a.correlationScore * 0.04))
-        .slice(0, 3)
+      const combos = makeParlayCombos(candidateEdges, size)
+      if (!combos.length) return
+
+      const recommendations = combos.map((legs) => buildRecommendation(legs, 'edge'))
+
+      const byEdge = [...recommendations]
+        .sort((a, b) => {
+          const edgeA = a.legs.reduce((sum, leg) => sum + (leg.edge_pct || 0), 0)
+          const edgeB = b.legs.reduce((sum, leg) => sum + (leg.edge_pct || 0), 0)
+          return edgeB - edgeA
+        })[0]
+
+      const byStreak = [...recommendations]
+        .sort((a, b) => {
+          const streakA = a.legs.reduce((sum, leg) => sum + ((leg.streak?.hit_rate || 0) + (leg.streak?.current_streak || 0) * 5), 0)
+          const streakB = b.legs.reduce((sum, leg) => sum + ((leg.streak?.hit_rate || 0) + (leg.streak?.current_streak || 0) * 5), 0)
+          return streakB - streakA
+        })[0]
+
+      const byVegas = [...recommendations]
+        .sort((a, b) => americanToDecimal(b.combinedOdds) - americanToDecimal(a.combinedOdds))[0]
+
+      output[size] = [
+        { ...byEdge, strategy: 'edge' },
+        { ...byStreak, strategy: 'streak' },
+        { ...byVegas, strategy: 'vegas' },
+      ]
     })
 
     return output
   }, [candidateEdges])
 
   const strategy442 = useMemo(() => {
-    const twoLegA = bestByLegCount[2]?.[0]
-    const twoLegB = bestByLegCount[2]?.[1]
+    const twoLeg = parlaysByLegCount[2]
+    if (twoLeg.length < 2) return []
 
-    if (!twoLegA || !twoLegB) return []
-
-    const fourLegEdges = [...twoLegA.legs, ...twoLegB.legs].slice(0, 4)
-    const fourLegger = toRecommendation(fourLegEdges)
+    const first = twoLeg[0]
+    const second = twoLeg[1]
+    const fourLegger = buildRecommendation([...first.legs, ...second.legs], 'edge')
 
     return [
-      { label: '$4 - 2 Legger A', stake: 4, parlay: twoLegA },
-      { label: '$4 - 2 Legger B', stake: 4, parlay: twoLegB },
+      { label: '$4 - 2 Legger (Edge%)', stake: 4, parlay: first },
+      { label: '$4 - 2 Legger (Streak)', stake: 4, parlay: second },
       { label: '$2 - Combined 4 Legger', stake: 2, parlay: fourLegger },
     ]
-  }, [bestByLegCount])
-
-  const persistTracked = (next: TrackedParlay[]) => {
-    setTrackedParlays(next)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  }
+  }, [parlaysByLegCount])
 
   const addTrackedParlay = (label: string, stake: number, parlay: ParlayRecommendation) => {
     const decimal = americanToDecimal(parlay.combinedOdds)
@@ -183,21 +228,41 @@ export default function BetsPage() {
   const bankrollSummary = useMemo(() => {
     const totalStaked = trackedParlays.reduce((sum, bet) => sum + bet.stake, 0)
     const pnl = trackedParlays.reduce((sum, bet) => sum + payout(bet.stake, bet.toWin, bet.result), 0)
+    const currentBankroll = bankroll + pnl
+
     return {
       totalStaked,
       pnl,
       roi: totalStaked ? (pnl / totalStaked) * 100 : 0,
+      currentBankroll,
     }
-  }, [trackedParlays])
+  }, [trackedParlays, bankroll])
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold mb-2">Parlay Builder</h1>
-        <p className="text-muted-foreground">Recommended 2-leg, 4-leg, and 6-leg parlays with lightweight correlation scoring + bankroll tracking.</p>
+        <p className="text-muted-foreground">3 picks per leg size: Edge%, Streak, and Highest Vegas Odds. Parlays avoid duplicate players.</p>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-4">
+      <div className="rounded-lg border border-border p-4 bg-card space-y-3">
+        <label className="text-sm font-medium block">Starting Bankroll ($)</label>
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={bankroll}
+          onChange={(event) => saveBankroll(Number(event.target.value))}
+          className="w-full md:w-72 px-3 py-2 rounded-md border border-border bg-background text-sm"
+        />
+        <p className="text-xs text-muted-foreground">Suggested 1-unit stake (2% bankroll): ${suggestedUnitStake.toFixed(2)}</p>
+      </div>
+
+      <div className="grid md:grid-cols-4 gap-4">
+        <div className="rounded-lg border border-border p-4 bg-card">
+          <div className="text-xs text-muted-foreground">Current Bankroll</div>
+          <div className="text-2xl font-bold">${bankrollSummary.currentBankroll.toFixed(2)}</div>
+        </div>
         <div className="rounded-lg border border-border p-4 bg-card">
           <div className="text-xs text-muted-foreground">Total Staked</div>
           <div className="text-2xl font-bold">${bankrollSummary.totalStaked.toFixed(2)}</div>
@@ -222,23 +287,34 @@ export default function BetsPage() {
         <div className="space-y-6">
           {[2, 4, 6].map((size) => (
             <section key={size} className="space-y-3">
-              <h2 className="text-xl font-semibold">Best {size}-Leggers</h2>
+              <h2 className="text-xl font-semibold">{size}-Leggers (3 Strategies)</h2>
               <div className="grid lg:grid-cols-3 gap-3">
-                {(bestByLegCount[size] || []).map((parlay, idx) => (
-                  <div key={parlay.id} className="rounded-lg border border-border p-4 bg-card space-y-3">
+                {(parlaysByLegCount[size] || []).map((parlay) => (
+                  <div
+                    key={parlay.id}
+                    onClick={() => navigate(`/player/${parlay.legs[0].player_id}`)}
+                    className="rounded-lg border border-border p-4 bg-card space-y-3 cursor-pointer hover:border-primary/60 transition-colors"
+                  >
                     <div className="flex justify-between items-center">
-                      <div className="font-semibold">#{idx + 1} ({parlay.legCount} legs)</div>
+                      <div className="font-semibold">{strategyLabel(parlay.strategy)}</div>
                       <div className="text-sm text-primary">{parlay.combinedOdds > 0 ? `+${parlay.combinedOdds}` : parlay.combinedOdds}</div>
                     </div>
                     <ul className="space-y-1 text-sm text-muted-foreground">
                       {parlay.legs.map((leg) => (
-                        <li key={`${leg.player_id}-${leg.stat_type}`}>{leg.player_name} {leg.recommendation} {leg.stat_type} ({leg.line})</li>
+                        <li key={`${parlay.id}-${leg.player_id}-${leg.stat_type}`}>{leg.player_name} {leg.recommendation} {leg.stat_type} ({leg.line})</li>
                       ))}
                     </ul>
                     <div className="text-xs text-muted-foreground">Corr: {parlay.correlationScore.toFixed(2)} | Est Win: {(parlay.impliedWinRate * 100).toFixed(1)}% | EV: {(parlay.expectedValue * 100).toFixed(1)}%</div>
-                    <button onClick={() => addTrackedParlay(`${size}-Legger #${idx + 1}`, 5, parlay)} className="w-full rounded-md bg-primary text-primary-foreground py-2 text-sm font-medium">
-                      Track for $5
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        addTrackedParlay(`${size}-Legger ${strategyLabel(parlay.strategy)}`, suggestedUnitStake, parlay)
+                      }}
+                      className="w-full rounded-md bg-primary text-primary-foreground py-2 text-sm font-medium"
+                    >
+                      Track ({`$${suggestedUnitStake.toFixed(2)}`})
                     </button>
+                    <p className="text-[11px] text-muted-foreground">Click card to open first player card.</p>
                   </div>
                 ))}
               </div>
