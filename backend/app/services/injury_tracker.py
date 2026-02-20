@@ -31,6 +31,8 @@ except Exception as e:
 # ── CACHE for injury reports (so we don't spam the API) ──────────────────────
 _injury_cache = {}
 _cache_expiry = {}
+_player_usage_cache = {}
+_team_usage_cache = {}
 
 def _get_cached_injuries(game_date: date) -> Optional[list]:
     """Check if we have a cached injury report for this date."""
@@ -49,6 +51,24 @@ def _cache_injuries(game_date: date, injuries: list):
     cache_key = str(game_date)
     _injury_cache[cache_key] = injuries
     _cache_expiry[cache_key] = datetime.now() + timedelta(hours=1)
+
+
+def _get_cached_usage(cache: dict, key: str):
+    entry = cache.get(key)
+    if not entry:
+        return None
+    expires_at = entry.get("expires_at")
+    if not expires_at or datetime.now() >= expires_at:
+        cache.pop(key, None)
+        return None
+    return entry.get("data")
+
+
+def _set_cached_usage(cache: dict, key: str, data, ttl_minutes: int = 30):
+    cache[key] = {
+        "data": data,
+        "expires_at": datetime.now() + timedelta(minutes=ttl_minutes),
+    }
 
 
 def _normalize_name(name: str) -> str:
@@ -171,24 +191,30 @@ def calculate_injury_impact_factor(
     if not player:
         return 1.0
     
-    # Get player's recent average usage rate
-    recent_games = (
-        db.query(PlayerGameStats)
-        .join(Game, PlayerGameStats.game_id == Game.id)
-        .filter(
-            PlayerGameStats.player_id == player_id,
-            PlayerGameStats.minutes >= 15,
-            PlayerGameStats.usage_rate != None,
+    cache_date = game_date or date.today()
+    usage_cache_key = f"{cache_date}:{player_id}"
+
+    # Get player's recent average usage rate (cached)
+    player_usage = _get_cached_usage(_player_usage_cache, usage_cache_key)
+    if player_usage is None:
+        recent_games = (
+            db.query(PlayerGameStats)
+            .join(Game, PlayerGameStats.game_id == Game.id)
+            .filter(
+                PlayerGameStats.player_id == player_id,
+                PlayerGameStats.minutes >= 15,
+                PlayerGameStats.usage_rate != None,
+            )
+            .order_by(desc(Game.date))
+            .limit(10)
+            .all()
         )
-        .order_by(desc(Game.date))
-        .limit(10)
-        .all()
-    )
-    
-    if not recent_games:
-        return 1.0
-    
-    player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
+
+        if not recent_games:
+            return 1.0
+
+        player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
+        _set_cached_usage(_player_usage_cache, usage_cache_key, player_usage)
     
     # Get all active teammates
     teammates = (
@@ -208,40 +234,45 @@ def calculate_injury_impact_factor(
     if not injuries:
         return 1.0
     
+    # Build quick injury status lookup by normalized player name.
+    injury_status_map = {}
+    for inj in injuries:
+        if isinstance(inj, dict):
+            name = inj.get("Player Name", "")
+            if name:
+                injury_status_map[_normalize_name(name)] = inj.get("Current Status")
+
+    team_usage_cache_key = f"{cache_date}:{player.team_id}"
+    team_usage_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
+    if team_usage_map is None:
+        team_usage_map = {}
+        for teammate in teammates:
+            tm_games = (
+                db.query(PlayerGameStats)
+                .join(Game, PlayerGameStats.game_id == Game.id)
+                .filter(
+                    PlayerGameStats.player_id == teammate.id,
+                    PlayerGameStats.minutes >= 15,
+                    PlayerGameStats.usage_rate != None,
+                )
+                .order_by(desc(Game.date))
+                .limit(10)
+                .all()
+            )
+            if tm_games:
+                team_usage_map[teammate.id] = sum(g.usage_rate for g in tm_games) / len(tm_games)
+        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_usage_map)
+
     missing_usage = 0.0
     healthy_teammates = []
     
     for teammate in teammates:
         # Check injury status
-        status = None
-        for inj in injuries:
-            if isinstance(inj, dict):
-                player_name = inj.get("Player Name", "")
-            else:
-                continue
+        status = injury_status_map.get(_normalize_name(teammate.name))
+        tm_usage = team_usage_map.get(teammate.id)
 
-            if _name_similarity(teammate.name, player_name) >= 0.85:
-                status = inj.get('Current Status')
-                break
-        
-        # Get teammate's average usage
-        tm_games = (
-            db.query(PlayerGameStats)
-            .join(Game, PlayerGameStats.game_id == Game.id)
-            .filter(
-                PlayerGameStats.player_id == teammate.id,
-                PlayerGameStats.minutes >= 15,
-                PlayerGameStats.usage_rate != None,
-            )
-            .order_by(desc(Game.date))
-            .limit(10)
-            .all()
-        )
-        
-        if not tm_games:
+        if tm_usage is None:
             continue
-        
-        tm_usage = sum(g.usage_rate for g in tm_games) / len(tm_games)
         
         if status in ['Out', 'Doubtful'] and tm_usage > 20.0:
             missing_usage += tm_usage
