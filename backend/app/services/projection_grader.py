@@ -28,6 +28,44 @@ def _normalize_accuracy_stat_type(stat_type: str) -> str:
     return alias_map.get(normalized, normalized)
 
 
+def _stat_type_variants(stat_type: str) -> list[str]:
+    normalized = _normalize_accuracy_stat_type(stat_type)
+    variants = {normalized}
+    if normalized == 'threes':
+        variants.update({'3pm', '3pt', '3ptm', 'three_pointers_made'})
+    if normalized == 'ra':
+        variants.add('r+a')
+    return list(variants)
+
+
+def _to_probability(odds: Optional[int]) -> Optional[float]:
+    if odds is None:
+        return None
+    if odds >= 0:
+        return 100 / (odds + 100)
+    return abs(odds) / (abs(odds) + 100)
+
+
+def _recommended_no_vig_probability(over_odds: Optional[int], under_odds: Optional[int], recommendation: Optional[str]) -> Optional[float]:
+    over_prob = _to_probability(over_odds)
+    under_prob = _to_probability(under_odds)
+    if over_prob is None or under_prob is None:
+        return None
+
+    total = over_prob + under_prob
+    if total <= 0:
+        return None
+
+    fair_over = over_prob / total
+    fair_under = under_prob / total
+
+    if recommendation == 'OVER':
+        return round(fair_over, 4)
+    if recommendation == 'UNDER':
+        return round(fair_under, 4)
+    return None
+
+
 def grade_yesterdays_projections(db: Session, target_date: Optional[date] = None):
     """
     Compare yesterday's projections to actual game results.
@@ -168,16 +206,18 @@ def calculate_model_accuracy(
     
     Returns dict with overall accuracy, error metrics, by edge size, etc.
     """
-    from app.models.projections import ProjectionResult
-    from app.models.player import Game
+    from app.models.projections import ProjectionResult, ProjectionHistory
+    from app.models.player import Game, Player, Team, OddsLine
     
     normalized_stat_type = _normalize_accuracy_stat_type(stat_type)
     cutoff_date = date.today() - timedelta(days=days_back)
     
+    stat_variants = _stat_type_variants(normalized_stat_type)
+
     query = db.query(ProjectionResult).join(
         Game, ProjectionResult.game_id == Game.id
     ).filter(
-        ProjectionResult.stat_type == normalized_stat_type,
+        ProjectionResult.stat_type.in_(stat_variants),
         Game.date >= cutoff_date,
         ProjectionResult.bet_result != None,
     )
@@ -194,8 +234,121 @@ def calculate_model_accuracy(
             'stat_type': normalized_stat_type,
             'days_back': days_back,
             'sample_size': 0,
+            'top_edge_bets': [],
+            'top_streaky_bets': [],
+            'top_no_vig_bets': [],
             'message': 'No graded projections found',
         }
+
+    detailed_rows = db.query(
+        ProjectionResult,
+        Game,
+        Player,
+        Team,
+        ProjectionHistory,
+        OddsLine,
+    ).join(
+        Game, ProjectionResult.game_id == Game.id
+    ).join(
+        Player, ProjectionResult.player_id == Player.id
+    ).outerjoin(
+        Team, Player.team_id == Team.id
+    ).outerjoin(
+        ProjectionHistory, ProjectionHistory.id == ProjectionResult.projection_id
+    ).outerjoin(
+        OddsLine,
+        (OddsLine.player_id == ProjectionResult.player_id) &
+        (OddsLine.game_id == ProjectionResult.game_id) &
+        (OddsLine.stat_type == ProjectionResult.stat_type) &
+        (OddsLine.line == ProjectionResult.line_value)
+    ).filter(
+        ProjectionResult.stat_type.in_(stat_variants),
+        Game.date >= cutoff_date,
+        ProjectionResult.bet_result != None,
+    )
+
+    if min_edge is not None:
+        detailed_rows = detailed_rows.filter(func.abs(ProjectionResult.edge_pct) >= min_edge)
+
+    detailed_rows = detailed_rows.all()
+
+    def _base_bet_payload(row):
+        result, game, player, team, history, odds_line = row
+        no_vig_prob = _recommended_no_vig_probability(
+            odds_line.over_odds if odds_line else None,
+            odds_line.under_odds if odds_line else None,
+            result.recommendation,
+        )
+        return {
+            'player_id': result.player_id,
+            'player_name': player.name if player else 'Unknown',
+            'team_abbr': team.abbreviation if team and team.abbreviation else '?',
+            'game_date': str(game.date),
+            'stat_type': result.stat_type,
+            'recommendation': result.recommendation,
+            'bet_result': result.bet_result,
+            'line': result.line_value,
+            'projected': result.projected_value,
+            'actual': result.actual_value,
+            'edge_pct': round(result.edge_pct or 0, 2),
+            'over_prob': round(history.over_prob, 4) if history and history.over_prob is not None else None,
+            'under_prob': round(history.under_prob, 4) if history and history.under_prob is not None else None,
+            'no_vig_prob': no_vig_prob,
+        }
+
+    top_edge_bets = [
+        _base_bet_payload(row)
+        for row in sorted(detailed_rows, key=lambda row: abs((row[0].edge_pct or 0)), reverse=True)[:10]
+    ]
+
+    streak_groups = {}
+    ordered_rows = sorted(detailed_rows, key=lambda row: (row[1].date, row[0].id))
+    for row in ordered_rows:
+        result = row[0]
+        key = (result.player_id, result.stat_type, result.recommendation)
+        group = streak_groups.get(key)
+        if not group:
+            streak_groups[key] = {
+                'current': 1,
+                'last_result': result.bet_result,
+                'latest_row': row,
+            }
+            continue
+
+        if result.bet_result == group['last_result']:
+            group['current'] += 1
+        else:
+            group['current'] = 1
+            group['last_result'] = result.bet_result
+        group['latest_row'] = row
+
+    top_streaky_bets = []
+    for group in streak_groups.values():
+        payload = _base_bet_payload(group['latest_row'])
+        payload['streak_count'] = group['current']
+        payload['streak_type'] = group['last_result']
+        top_streaky_bets.append(payload)
+
+    top_streaky_bets.sort(key=lambda bet: bet['streak_count'], reverse=True)
+    top_streaky_bets = top_streaky_bets[:10]
+
+    top_no_vig_bets = [
+        _base_bet_payload(row)
+        for row in sorted(
+            detailed_rows,
+            key=lambda row: (_recommended_no_vig_probability(
+                row[5].over_odds if row[5] else None,
+                row[5].under_odds if row[5] else None,
+                row[0].recommendation,
+            ) or 0),
+            reverse=True,
+        )
+        if _recommended_no_vig_probability(
+            row[5].over_odds if row[5] else None,
+            row[5].under_odds if row[5] else None,
+            row[0].recommendation,
+        ) is not None
+    ][:10]
     
     total = len(results)
     wins = sum(1 for r in results if r.bet_result == 'win')
@@ -277,4 +430,7 @@ def calculate_model_accuracy(
             'over_win_rate': round(over_win_rate, 1),
             'under_win_rate': round(under_win_rate, 1),
         },
+        'top_edge_bets': top_edge_bets,
+        'top_streaky_bets': top_streaky_bets,
+        'top_no_vig_bets': top_no_vig_bets,
     }

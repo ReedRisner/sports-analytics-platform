@@ -350,9 +350,10 @@ def edge_finder(
         
         tasks.append((ol, game, player, opp_team_id, min_edge_pct))
     
-    # PARALLEL PROCESSING - Process all odds lines simultaneously!
-    # This makes first load 5-10x faster (3-5s → 0.5-1s)
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # PARALLEL PROCESSING - Keep concurrency below DB pool capacity to avoid
+    # QueuePool timeouts under load.
+    max_workers = max(1, min(4, len(tasks)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         raw_results = list(executor.map(_process_single_edge, tasks))
     
     # Filter out None results and add team abbreviations
