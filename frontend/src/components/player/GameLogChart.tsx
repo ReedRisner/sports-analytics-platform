@@ -108,12 +108,13 @@ export function GameLogChart({
             <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" style={{ fontSize: 12 }} />
             <YAxis stroke="hsl(var(--muted-foreground))" style={{ fontSize: 12 }} />
             <Tooltip
-              contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+              wrapperStyle={{ opacity: 1 }}
+              contentStyle={{ backgroundColor: 'hsl(var(--card) / 1)', border: '1px solid hsl(var(--border))', borderRadius: '8px', opacity: 1 }}
               content={({ active, payload }) => {
                 if (!active || !payload || !payload.length) return null
                 const data = payload[0].payload
                 return (
-                  <div className="bg-card border border-border rounded-lg p-3">
+                  <div className="border border-border rounded-lg p-3 shadow-lg" style={{ backgroundColor: 'hsl(var(--card) / 1)' }}>
                     <p className="font-semibold mb-1">{data.isHome} {data.opponent}</p>
                     <p className="text-sm">{statType === 'threes' ? '3PM' : statType.toUpperCase()}: <span className="font-bold">{data.value}</span></p>
                     {line > 0 && <p className={`text-sm ${data.hit ? 'text-green-500' : 'text-red-500'}`}>{data.hit ? '✓ Over' : '✗ Under'} {line}</p>}
