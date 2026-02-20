@@ -229,9 +229,19 @@ def calculate_injury_impact_factor(
     
     # Use cached injury data
     injuries = fetch_todays_injuries(game_date)
-    
-    # If no injury data, return neutral (avoids spamming failed requests)
+
+    # Fallback: when external injury feed is unavailable/invalid, infer likely
+    # absences from most recent completed team game so injury factor still works.
+    inferred_out_ids = set()
     if not injuries:
+        inferred_out_ids = _infer_recent_absent_teammates(
+            db=db,
+            team_id=player.team_id,
+            game_date=cache_date,
+        )
+    
+    # If no injury data and no inferred absences, return neutral.
+    if not injuries and not inferred_out_ids:
         return 1.0
     
     # Build quick injury status lookup by normalized player name.
@@ -274,9 +284,19 @@ def calculate_injury_impact_factor(
         if tm_usage is None:
             continue
         
+        inferred_out = teammate.id in inferred_out_ids
+
         if status in ['Out', 'Doubtful'] and tm_usage > 20.0:
             missing_usage += tm_usage
             logger.info(f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage) - redistributing")
+        elif inferred_out and tm_usage > 20.0:
+            # Fallback signal is weaker than official injury status.
+            inferred_missing = tm_usage * 0.6
+            missing_usage += inferred_missing
+            logger.info(
+                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, "
+                f"counting {inferred_missing:.1f}%)"
+            )
         else:
             healthy_teammates.append((teammate.id, tm_usage))
     
@@ -303,3 +323,53 @@ def calculate_injury_impact_factor(
         )
     
     return usage_boost_factor
+
+
+def _infer_recent_absent_teammates(
+    db: Session,
+    team_id: int,
+    game_date: date,
+) -> set[int]:
+    """
+    Infer likely absences from the team's most recent completed game.
+
+    This acts as a fallback when the external injury feed fails validation.
+    """
+    from app.models.player import Player, PlayerGameStats, Game
+
+    last_game = (
+        db.query(Game)
+        .filter(
+            ((Game.home_team_id == team_id) | (Game.away_team_id == team_id)),
+            Game.home_score != None,
+            Game.date < game_date,
+        )
+        .order_by(desc(Game.date))
+        .first()
+    )
+
+    if not last_game:
+        return set()
+
+    team_player_ids = {
+        p.id
+        for p in db.query(Player.id).filter(
+            Player.team_id == team_id,
+            Player.is_active == True,
+        ).all()
+    }
+    if not team_player_ids:
+        return set()
+
+    played_ids = {
+        s.player_id
+        for s in db.query(PlayerGameStats.player_id)
+        .filter(
+            PlayerGameStats.game_id == last_game.id,
+            PlayerGameStats.player_id.in_(team_player_ids),
+            PlayerGameStats.minutes >= 1,
+        )
+        .all()
+    }
+
+    return team_player_ids - played_ids

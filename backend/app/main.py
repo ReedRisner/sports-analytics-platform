@@ -8,10 +8,11 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi.middleware.cors import CORSMiddleware
 import pytz
 
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
 from app.models import player  # ensures all tables are created
 
 from app.routers import players, games, projections, odds, auth
+from app.services.schema_compat import ensure_projection_history_schema
 
 
 logging.basicConfig(level=logging.INFO)
@@ -72,6 +73,14 @@ scheduler.add_job(
 async def lifespan(app: FastAPI):
     # Startup
     Base.metadata.create_all(bind=engine)
+
+    # Keep local/dev DBs compatible if migrations were not applied yet.
+    db = SessionLocal()
+    try:
+        ensure_projection_history_schema(db)
+    finally:
+        db.close()
+
     scheduler.start()
     logger.info("APScheduler started — odds fetching at 08:00 and 20:00 UTC")
     yield
