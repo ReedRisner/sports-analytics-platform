@@ -125,6 +125,82 @@ def _find_status_for_player(player_name: str, injuries: list) -> Optional[str]:
     return best_status if best_score >= 0.85 else None
 
 
+def _team_matches_injury_record(team_name: str, team_abbreviation: str, injury_record: dict) -> bool:
+    """Check whether an injury record likely belongs to the provided NBA team."""
+    team_field = str(injury_record.get("Team", "") or "").strip().lower()
+    if not team_field:
+        return False
+
+    normalized_name = str(team_name or "").strip().lower()
+    normalized_abbr = str(team_abbreviation or "").strip().lower()
+
+    return (
+        (normalized_name and normalized_name in team_field)
+        or (normalized_abbr and normalized_abbr in team_field)
+    )
+
+
+def _find_status_for_player_and_team(
+    player_name: str,
+    team_name: str,
+    team_abbreviation: str,
+    injuries: list,
+) -> Optional[str]:
+    """
+    Find injury status for a player while preferring records that match the team.
+
+    This prevents false negatives/positives when name matching is ambiguous.
+    """
+    normalized_target = _normalize_name(player_name)
+    if not normalized_target:
+        return None
+
+    best_any_status = None
+    best_any_score = 0.0
+    best_team_status = None
+    best_team_score = 0.0
+
+    for inj in injuries:
+        if not isinstance(inj, dict):
+            continue
+
+        injury_name = inj.get("Player Name", "")
+        status = inj.get("Current Status")
+        if not injury_name or not status:
+            continue
+
+        score = _name_similarity(normalized_target, injury_name)
+        if score > best_any_score:
+            best_any_score = score
+            best_any_status = status
+
+        if _team_matches_injury_record(team_name, team_abbreviation, inj) and score > best_team_score:
+            best_team_score = score
+            best_team_status = status
+
+    if best_team_score >= 0.85:
+        return best_team_status
+    if best_any_score >= 0.85:
+        return best_any_status
+    return None
+
+
+def _status_indicates_unavailable(status: Optional[str]) -> bool:
+    """Return True when a feed status should count as an inactive player."""
+    normalized = str(status or "").strip().lower()
+    if not normalized:
+        return False
+
+    # Covers values like "Out", "Out For Season", "DOUBTFUL", "Inactive".
+    unavailable_keywords = ("out", "doubt", "inactive", "suspended", "g league")
+    if any(keyword in normalized for keyword in unavailable_keywords):
+        return True
+
+    # Explicitly don't count game-time/availability statuses.
+    available_keywords = ("questionable", "probable", "available", "active")
+    return not any(keyword in normalized for keyword in available_keywords)
+
+
 def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
     """
     Fetch NBA injury report for a specific date.
@@ -206,7 +282,12 @@ def get_player_injury_status(
 
     injuries = fetch_todays_injuries(game_date)
 
-    status = _find_status_for_player(player.name, injuries)
+    status = _find_status_for_player_and_team(
+        player_name=player.name,
+        team_name=team.name,
+        team_abbreviation=team.abbreviation,
+        injuries=injuries,
+    )
     if not status:
         return None
 
@@ -237,10 +318,14 @@ def calculate_injury_impact_factor(
         # Return neutral factor - no injury data available
         return 1.0
 
-    from app.models.player import Player, PlayerGameStats, Game
+    from app.models.player import Player, PlayerGameStats, Game, Team
 
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
+        return 1.0
+
+    team = db.query(Team).filter(Team.id == player.team_id).first()
+    if not team:
         return 1.0
 
     cache_date = game_date or date.today()
@@ -323,7 +408,12 @@ def calculate_injury_impact_factor(
 
     for teammate in teammates:
         # Check injury status
-        status = _find_status_for_player(teammate.name, injuries)
+        status = _find_status_for_player_and_team(
+            player_name=teammate.name,
+            team_name=team.name,
+            team_abbreviation=team.abbreviation,
+            injuries=injuries,
+        )
         tm_usage = team_usage_map.get(teammate.id)
 
         if tm_usage is None:
@@ -331,7 +421,7 @@ def calculate_injury_impact_factor(
 
         inferred_out = teammate.id in inferred_out_ids
 
-        if status in ["Out", "Doubtful"] and tm_usage > 20.0:
+        if _status_indicates_unavailable(status) and tm_usage > 20.0:
             missing_usage += tm_usage
             logger.info(f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage) - redistributing")
         elif inferred_out and tm_usage > 20.0:
