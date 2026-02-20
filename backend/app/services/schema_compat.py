@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from threading import Lock
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,8 @@ def ensure_projection_history_schema(db: Session) -> None:
     """
     Ensure ``projection_history`` has columns expected by current ORM model.
 
-    Uses PostgreSQL ``ADD COLUMN IF NOT EXISTS`` so this remains safe under
-    parallel requests and mixed rollout environments.
+    This keeps older local DBs working even if an Alembic migration wasn't run yet,
+    while remaining safe under parallel request load.
     """
     global _projection_history_checked
 
@@ -30,12 +30,23 @@ def ensure_projection_history_schema(db: Session) -> None:
         if _projection_history_checked:
             return
 
-        db.execute(
-            text(
-                "ALTER TABLE projection_history "
-                "ADD COLUMN IF NOT EXISTS injury_factor DOUBLE PRECISION"
+        inspector = inspect(db.bind)
+        table_names = set(inspector.get_table_names())
+        if "projection_history" not in table_names:
+            _projection_history_checked = True
+            return
+
+        columns = {col["name"] for col in inspector.get_columns("projection_history")}
+        if "injury_factor" not in columns:
+            db.execute(
+                text(
+                    "ALTER TABLE projection_history "
+                    "ADD COLUMN IF NOT EXISTS injury_factor DOUBLE PRECISION"
+                )
             )
-        )
-        db.commit()
+            db.commit()
+            logger.warning(
+                "Added missing projection_history.injury_factor column for schema compatibility"
+            )
+
         _projection_history_checked = True
-        logger.info("Schema compatibility check complete for projection_history")
