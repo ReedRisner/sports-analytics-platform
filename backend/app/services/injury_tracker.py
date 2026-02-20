@@ -248,7 +248,7 @@ def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
             injury_data = injury.get_reportdata(report_time)
             if injury_data:
                 _cache_injuries(game_date, injury_data)
-                logger.info(
+                logger.debug(
                     f"✓ Fetched {len(injury_data)} injury records for {game_date} "
                     f"(snapshot {report_time:%Y-%m-%d %I:%M%p})"
                 )
@@ -475,7 +475,7 @@ def calculate_injury_impact_factor(
 
         if _status_indicates_unavailable(status) and is_core_rotation:
             missing_weighted_usage += tm_weighted_usage
-            logger.info(
+            logger.debug(
                 f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg) - "
                 f"redistributing {tm_weighted_usage:.1f} weighted usage"
             )
@@ -483,10 +483,11 @@ def calculate_injury_impact_factor(
             # Fallback signal is weaker than official injury status.
             inferred_missing = tm_weighted_usage * 0.6
             missing_weighted_usage += inferred_missing
-            logger.info(
-                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg, "
-                f"counting {inferred_missing:.1f} weighted usage)"
-            )
+            if inferred_missing >= 1.0:
+                logger.debug(
+                    f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg, "
+                    f"counting {inferred_missing:.1f} weighted usage)"
+                )
         else:
             healthy_teammates.append((teammate.id, tm_weighted_usage))
 
@@ -510,7 +511,7 @@ def calculate_injury_impact_factor(
     usage_boost_factor = min(1.15, usage_boost_factor)
 
     if usage_boost_factor > 1.02:
-        logger.info(
+        logger.debug(
             f"✓ {player.name} injury boost: {usage_boost_factor:.3f}x "
             f"({missing_weighted_usage:.1f} weighted missing usage)"
         )
