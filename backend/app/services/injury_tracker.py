@@ -331,9 +331,19 @@ def calculate_injury_impact_factor(
     cache_date = game_date or date.today()
     usage_cache_key = f"{cache_date}:{player_id}"
 
-    # Get player's recent average usage rate (cached)
-    player_usage = _get_cached_usage(_player_usage_cache, usage_cache_key)
-    if player_usage is None:
+    # Get player's recent usage/minutes context (cached)
+    player_context = _get_cached_usage(_player_usage_cache, usage_cache_key)
+    player_usage = None
+    player_minutes = None
+
+    if isinstance(player_context, dict):
+        player_usage = player_context.get("usage")
+        player_minutes = player_context.get("minutes")
+    elif isinstance(player_context, (int, float)):
+        # Backward compatibility for prior cache format.
+        player_usage = float(player_context)
+
+    if player_usage is None or player_minutes is None:
         recent_games = (
             db.query(PlayerGameStats)
             .join(Game, PlayerGameStats.game_id == Game.id)
@@ -351,7 +361,15 @@ def calculate_injury_impact_factor(
             return 1.0
 
         player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
-        _set_cached_usage(_player_usage_cache, usage_cache_key, player_usage)
+        player_minutes = sum(g.minutes for g in recent_games) / len(recent_games)
+        _set_cached_usage(
+            _player_usage_cache,
+            usage_cache_key,
+            {"usage": player_usage, "minutes": player_minutes},
+        )
+
+    # Weight by role: players with bigger minute loads absorb more vacated usage.
+    player_minutes_weight = max(0.4, min(1.3, (player_minutes or 24.0) / 30.0))
 
     # Get all active teammates
     teammates = (
@@ -383,9 +401,9 @@ def calculate_injury_impact_factor(
 
     # Keep raw injuries list; lookup handles first/last vs last,first formats.
     team_usage_cache_key = f"{cache_date}:{player.team_id}"
-    team_usage_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
-    if team_usage_map is None:
-        team_usage_map = {}
+    team_context_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
+    if team_context_map is None:
+        team_context_map = {}
         for teammate in teammates:
             tm_games = (
                 db.query(PlayerGameStats)
@@ -400,10 +418,15 @@ def calculate_injury_impact_factor(
                 .all()
             )
             if tm_games:
-                team_usage_map[teammate.id] = sum(g.usage_rate for g in tm_games) / len(tm_games)
-        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_usage_map)
+                tm_usage = sum(g.usage_rate for g in tm_games) / len(tm_games)
+                tm_minutes = sum(g.minutes for g in tm_games) / len(tm_games)
+                team_context_map[teammate.id] = {
+                    "usage": tm_usage,
+                    "minutes": tm_minutes,
+                }
+        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_context_map)
 
-    missing_usage = 0.0
+    missing_weighted_usage = 0.0
     healthy_teammates = []
 
     for teammate in teammates:
@@ -414,36 +437,57 @@ def calculate_injury_impact_factor(
             team_abbreviation=team.abbreviation,
             injuries=injuries,
         )
-        tm_usage = team_usage_map.get(teammate.id)
+        tm_context = team_context_map.get(teammate.id)
+        if isinstance(tm_context, dict):
+            tm_usage = tm_context.get("usage")
+            tm_minutes = tm_context.get("minutes")
+        elif isinstance(tm_context, (int, float)):
+            # Backward compatibility for prior cache format.
+            tm_usage = float(tm_context)
+            tm_minutes = 24.0
+        else:
+            tm_usage = None
+            tm_minutes = None
 
         if tm_usage is None:
             continue
 
+        minute_weight = max(0.35, min(1.35, (tm_minutes or 24.0) / 30.0))
+        tm_weighted_usage = tm_usage * minute_weight
+
         inferred_out = teammate.id in inferred_out_ids
 
-        if _status_indicates_unavailable(status) and tm_usage > 20.0:
-            missing_usage += tm_usage
-            logger.info(f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage) - redistributing")
-        elif inferred_out and tm_usage > 20.0:
-            # Fallback signal is weaker than official injury status.
-            inferred_missing = tm_usage * 0.6
-            missing_usage += inferred_missing
+        is_core_rotation = (tm_minutes or 0) >= 20.0 and tm_usage >= 15.0
+
+        if _status_indicates_unavailable(status) and is_core_rotation:
+            missing_weighted_usage += tm_weighted_usage
             logger.info(
-                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, "
-                f"counting {inferred_missing:.1f}%)"
+                f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg) - "
+                f"redistributing {tm_weighted_usage:.1f} weighted usage"
+            )
+        elif inferred_out and is_core_rotation:
+            # Fallback signal is weaker than official injury status.
+            inferred_missing = tm_weighted_usage * 0.6
+            missing_weighted_usage += inferred_missing
+            logger.info(
+                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg, "
+                f"counting {inferred_missing:.1f} weighted usage)"
             )
         else:
-            healthy_teammates.append((teammate.id, tm_usage))
+            healthy_teammates.append((teammate.id, tm_weighted_usage))
 
-    if missing_usage == 0 or not healthy_teammates:
+    if missing_weighted_usage == 0 or not healthy_teammates:
         return 1.0
 
-    total_healthy_usage = sum(usg for _, usg in healthy_teammates)
+    total_healthy_weighted_usage = sum(weighted_usg for _, weighted_usg in healthy_teammates)
 
-    if total_healthy_usage == 0:
+    if total_healthy_weighted_usage == 0:
         return 1.0
 
-    redistribution_share = (player_usage / total_healthy_usage) * missing_usage
+    player_weighted_usage = player_usage * player_minutes_weight
+    redistribution_share = (
+        (player_weighted_usage / total_healthy_weighted_usage) * missing_weighted_usage
+    )
 
     # 5% usage increase ≈ 8-10% stat increase
     usage_boost_factor = 1.0 + (redistribution_share / player_usage) * 0.85
@@ -454,7 +498,7 @@ def calculate_injury_impact_factor(
     if usage_boost_factor > 1.02:
         logger.info(
             f"✓ {player.name} injury boost: {usage_boost_factor:.3f}x "
-            f"({missing_usage:.1f}% missing usage)"
+            f"({missing_weighted_usage:.1f} weighted missing usage)"
         )
 
     return usage_boost_factor
