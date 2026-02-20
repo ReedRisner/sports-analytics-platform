@@ -69,6 +69,20 @@ export default function AccuracyPage() {
   const [showStreakDetails, setShowStreakDetails] = useState(false)
 
   const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+
+  const getResultColor = (result: string): string => {
+    switch (result) {
+      case 'win':
+        return 'text-green-400'
+      case 'loss':
+        return 'text-red-400'
+      case 'push':
+        return 'text-yellow-400'
+      default:
+        return 'text-muted-foreground'
+    }
+  }
+
   const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
     const wins = bets.filter((bet) => bet.bet_result === 'win').length
     const losses = bets.filter((bet) => bet.bet_result === 'loss').length
@@ -125,22 +139,6 @@ export default function AccuracyPage() {
     </div>
   )
 
-  const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
-    const wins = bets.filter((bet) => bet.bet_result === 'win').length
-    const losses = bets.filter((bet) => bet.bet_result === 'loss').length
-    const pushes = bets.filter((bet) => bet.bet_result === 'push').length
-    const graded = wins + losses
-    const winRate = graded > 0 ? (wins / graded) * 100 : 0
-
-    return {
-      total: bets.length,
-      wins,
-      losses,
-      pushes,
-      winRate,
-    }
-  }
-
   // Fetch accuracy data
   const { data: accuracy, isLoading, error } = useQuery<AccuracyData>({
     queryKey: ['accuracy', statType, daysBack, minEdge],
@@ -167,8 +165,8 @@ export default function AccuracyPage() {
   return (
     <div className="space-y-8 pb-12">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-background p-8">
-        <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-transparent to-primary/20 blur-2xl" />
+      <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-linear-to-br from-primary/10 via-primary/5 to-background p-8">
+        <div className="absolute inset-0 bg-linear-to-r from-primary/20 via-transparent to-primary/20 blur-2xl" />
 
         <div className="relative">
           <div className="mb-2 flex items-center gap-3">
