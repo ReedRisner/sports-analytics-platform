@@ -65,8 +65,66 @@ export default function AccuracyPage() {
   const [statType, setStatType] = useState('points')
   const [daysBack, setDaysBack] = useState(30)
   const [minEdge, setMinEdge] = useState<number | null>(null)
+  const [showEdgeDetails, setShowEdgeDetails] = useState(false)
+  const [showStreakDetails, setShowStreakDetails] = useState(false)
 
   const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+  const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
+    const wins = bets.filter((bet) => bet.bet_result === 'win').length
+    const losses = bets.filter((bet) => bet.bet_result === 'loss').length
+    const pushes = bets.filter((bet) => bet.bet_result === 'push').length
+    const graded = wins + losses
+    const winRate = graded > 0 ? (wins / graded) * 100 : 0
+
+    return {
+      total: bets.length,
+      wins,
+      losses,
+      pushes,
+      winRate,
+    }
+  }
+
+  const renderTrackedBets = (bets: TrackedBet[], showStreak = false) => (
+    <div className="overflow-x-auto rounded-xl border border-border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/40 text-muted-foreground">
+          <tr>
+            <th className="p-3 text-left">Player</th>
+            <th className="p-3 text-left">Bet</th>
+            <th className="p-3 text-left">Edge</th>
+            <th className="p-3 text-left">Proj / Line / Actual</th>
+            {showStreak && <th className="p-3 text-left">Streak</th>}
+            <th className="p-3 text-left">Result</th>
+            <th className="p-3 text-left">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bets.map((bet, index) => (
+            <tr key={`${bet.player_id}-${bet.stat_type}-${bet.game_date}-${index}`} className="border-t border-border">
+              <td className="p-3 font-medium">
+                {bet.player_name} <span className="text-muted-foreground">({bet.team_abbr})</span>
+              </td>
+              <td className="p-3">
+                {bet.recommendation} {bet.stat_type}
+              </td>
+              <td className="p-3 font-mono">
+                {bet.edge_pct > 0 ? '+' : ''}
+                {bet.edge_pct.toFixed(1)}%
+              </td>
+              <td className="p-3 font-mono">
+                {bet.projected.toFixed(1)} / {bet.line?.toFixed(1) ?? '-'} / {bet.actual.toFixed(1)}
+              </td>
+              {showStreak && <td className="p-3">{bet.streak_count ? `${bet.streak_count}x ${bet.streak_type}` : '-'}</td>}
+              <td className={`p-3 font-semibold uppercase ${getResultColor(bet.bet_result)}`}>{bet.bet_result}</td>
+              <td className="p-3 text-muted-foreground">{bet.game_date}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+
   const summarizeTrackedBets = (bets: TrackedBet[]): BetSummary => {
     const wins = bets.filter((bet) => bet.bet_result === 'win').length
     const losses = bets.filter((bet) => bet.bet_result === 'loss').length
@@ -384,37 +442,47 @@ export default function AccuracyPage() {
           <section className="space-y-4">
             <h2 className="text-2xl font-bold tracking-tight">Best 10 Edge Bets ({sectionLabel})</h2>
             {accuracyTopEdgeBets.length > 0 ? (
-              <div className="rounded-xl border border-border bg-card p-6">
+              <div
+                className="cursor-pointer rounded-xl border border-border bg-card p-6 transition-colors hover:bg-muted/30"
+                onClick={() => setShowEdgeDetails((current) => !current)}
+              >
                 <div className="text-sm text-muted-foreground">Winning Percentage</div>
                 <div className="mt-2 text-4xl font-black text-green-400">{topEdgeSummary.winRate.toFixed(1)}%</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {topEdgeSummary.wins} of {topEdgeSummary.wins + topEdgeSummary.losses} bets were right
                   {topEdgeSummary.pushes > 0 && ` (${topEdgeSummary.pushes} pushes)`}
                 </div>
+                <div className="mt-2 text-xs text-primary">{showEdgeDetails ? 'Hide details' : 'Click to show player details'}</div>
               </div>
             ) : (
               <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
                 No graded edge bets found for this filter.
               </div>
             )}
+            {showEdgeDetails && accuracyTopEdgeBets.length > 0 && renderTrackedBets(accuracyTopEdgeBets)}
           </section>
 
           <section className="space-y-4">
             <h2 className="text-2xl font-bold tracking-tight">Top 10 Streaky Bets ({sectionLabel})</h2>
             {accuracyTopStreakyBets.length > 0 ? (
-              <div className="rounded-xl border border-border bg-card p-6">
+              <div
+                className="cursor-pointer rounded-xl border border-border bg-card p-6 transition-colors hover:bg-muted/30"
+                onClick={() => setShowStreakDetails((current) => !current)}
+              >
                 <div className="text-sm text-muted-foreground">Winning Percentage</div>
                 <div className="mt-2 text-4xl font-black text-green-400">{topStreakSummary.winRate.toFixed(1)}%</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {topStreakSummary.wins} of {topStreakSummary.wins + topStreakSummary.losses} bets were right
                   {topStreakSummary.pushes > 0 && ` (${topStreakSummary.pushes} pushes)`}
                 </div>
+                <div className="mt-2 text-xs text-primary">{showStreakDetails ? 'Hide details' : 'Click to show player details'}</div>
               </div>
             ) : (
               <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
                 No streak-based graded bets found for this filter.
               </div>
             )}
+            {showStreakDetails && accuracyTopStreakyBets.length > 0 && renderTrackedBets(accuracyTopStreakyBets, true)}
           </section>
 
           <section className="space-y-4">

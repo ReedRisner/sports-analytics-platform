@@ -7,7 +7,7 @@ export const STAT_TYPES = {
   assists: 'Assists',
   steals: 'Steals',
   blocks: 'Blocks',
-  threes: '3PM',
+  threes: 'Threes',
   pra: 'PRA',
   pr: 'P+R',
   pa: 'P+A',
