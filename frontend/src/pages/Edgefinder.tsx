@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import { EdgesTable } from '@/components/tables/EdgesTable'
-import { STAT_TYPES, SPORTSBOOKS, POSITIONS } from '@/lib/constants'
+import { STAT_TYPES, POSITIONS } from '@/lib/constants'
 import { Filter, SortAsc, SortDesc } from 'lucide-react'
 
 type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak' | 'no_vig'
@@ -49,11 +49,19 @@ export default function EdgeFinder() {
         aVal = a.recommendation === 'OVER' ? a.over_prob : a.under_prob
         bVal = b.recommendation === 'OVER' ? b.over_prob : b.under_prob
         break
-      case 'streak':
-        // Sort by streak length, only count "hit" streaks
-        aVal = (a.streak?.streak_type === 'hit') ? a.streak.current_streak : 0
-        bVal = (b.streak?.streak_type === 'hit') ? b.streak.current_streak : 0
-        break
+      case 'streak': {
+        // Sort by streak length regardless of type, but always keep no-streak rows at the end.
+        const aStreak = a.streak?.current_streak ?? 0
+        const bStreak = b.streak?.current_streak ?? 0
+        const aHasStreak = aStreak > 0
+        const bHasStreak = bStreak > 0
+
+        if (aHasStreak !== bHasStreak) {
+          return aHasStreak ? -1 : 1
+        }
+
+        return sortDirection === 'desc' ? bStreak - aStreak : aStreak - bStreak
+      }
       case 'no_vig':
         // Sort by fair odds probability (for recommended side)
         aVal = a.recommendation === 'OVER' 
