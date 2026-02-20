@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import Optional
 from difflib import SequenceMatcher
+import re
 
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -31,6 +32,8 @@ except Exception as e:
 # ── CACHE for injury reports (so we don't spam the API) ──────────────────────
 _injury_cache = {}
 _cache_expiry = {}
+_player_usage_cache = {}
+_team_usage_cache = {}
 
 def _get_cached_injuries(game_date: date) -> Optional[list]:
     """Check if we have a cached injury report for this date."""
@@ -51,12 +54,41 @@ def _cache_injuries(game_date: date, injuries: list):
     _cache_expiry[cache_key] = datetime.now() + timedelta(hours=1)
 
 
+def _get_cached_usage(cache: dict, key: str):
+    entry = cache.get(key)
+    if not entry:
+        return None
+    expires_at = entry.get("expires_at")
+    if not expires_at or datetime.now() >= expires_at:
+        cache.pop(key, None)
+        return None
+    return entry.get("data")
+
+
+def _set_cached_usage(cache: dict, key: str, data, ttl_minutes: int = 30):
+    cache[key] = {
+        "data": data,
+        "expires_at": datetime.now() + timedelta(minutes=ttl_minutes),
+    }
+
+
 def _normalize_name(name: str) -> str:
     """Normalize player name for fuzzy matching."""
     import unicodedata
-    name = unicodedata.normalize("NFKD", name)
-    name = "".join(c for c in name if not unicodedata.combining(c))
-    return name.lower().strip()
+
+    name = unicodedata.normalize("NFKD", str(name or ""))
+    name = "".join(c for c in name if not unicodedata.combining(c)).strip().lower()
+
+    # Convert "last, first" -> "first last"
+    if "," in name:
+        parts = [p.strip() for p in name.split(",", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            name = f"{parts[1]} {parts[0]}"
+
+    # Remove punctuation/noise and common suffixes
+    name = re.sub(r"[^a-z0-9\s]", " ", name)
+    tokens = [t for t in name.split() if t not in {"jr", "sr", "ii", "iii", "iv", "v"}]
+    return " ".join(tokens)
 
 
 def _name_similarity(name1: str, name2: str) -> float:
@@ -64,56 +96,86 @@ def _name_similarity(name1: str, name2: str) -> float:
     return SequenceMatcher(None, _normalize_name(name1), _normalize_name(name2)).ratio()
 
 
+def _find_status_for_player(player_name: str, injuries: list) -> Optional[str]:
+    """Find injury status for a player, handling name-order mismatches."""
+    normalized_target = _normalize_name(player_name)
+    if not normalized_target:
+        return None
+
+    best_status = None
+    best_score = 0.0
+
+    for inj in injuries:
+        if not isinstance(inj, dict):
+            continue
+
+        injury_name = inj.get("Player Name", "")
+        status = inj.get("Current Status")
+        if not injury_name or not status:
+            continue
+
+        score = _name_similarity(normalized_target, injury_name)
+        if score > best_score:
+            best_score = score
+            best_status = status
+
+    return best_status if best_score >= 0.85 else None
+
+
 def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
     """
     Fetch NBA injury report for a specific date.
-    
-    Returns: List of injury records (empty if nbainjuries unavailable or report doesn't exist)
+
+    Tries multiple release windows because reports may publish at different times
+    (including midnight) and some snapshots can fail validation.
+
+    Returns: List of injury records (empty if unavailable)
     """
     if not INJURIES_AVAILABLE or injury is None:
         return []
-    
+
     if game_date is None:
         game_date = date.today()
-    
+
     # Check cache first
     cached = _get_cached_injuries(game_date)
     if cached is not None:
         return cached
-    
-    try:
-        # nbainjuries expects datetime, default to 5pm ET
-        report_time = datetime(
-            year=game_date.year,
-            month=game_date.month,
-            day=game_date.day,
-            hour=17,
-            minute=0
+
+    candidate_times = [
+        # User-observed early release
+        datetime(game_date.year, game_date.month, game_date.day, 0, 0),
+        # Midday update window
+        datetime(game_date.year, game_date.month, game_date.day, 12, 0),
+        # Traditional evening report window
+        datetime(game_date.year, game_date.month, game_date.day, 17, 0),
+        # Fallback to prior evening report if today's snapshots are unavailable
+        datetime.combine(game_date - timedelta(days=1), datetime.min.time()).replace(hour=17),
+    ]
+
+    last_error = None
+    for report_time in candidate_times:
+        try:
+            injury_data = injury.get_reportdata(report_time)
+            if injury_data:
+                _cache_injuries(game_date, injury_data)
+                logger.info(
+                    f"✓ Fetched {len(injury_data)} injury records for {game_date} "
+                    f"(snapshot {report_time:%Y-%m-%d %I:%M%p})"
+                )
+                return injury_data
+        except Exception as e:
+            last_error = e
+            continue
+
+    # Cache empty result to avoid repeated failing lookups for the same date.
+    _cache_injuries(game_date, [])
+    if last_error is not None:
+        logger.debug(
+            f"Injury report not available for {game_date}; "
+            f"tried midnight/noon/5pm snapshots ({str(last_error)[:80]})"
         )
-        
-        # Fetch as JSON (simpler than DataFrame)
-        injury_data = injury.get_reportdata(report_time)
-        
-        if not injury_data:
-            # Cache empty result to avoid repeated lookups
-            _cache_injuries(game_date, [])
-            return []
-        
-        # Cache successful result
-        _cache_injuries(game_date, injury_data)
-        logger.info(f"✓ Fetched {len(injury_data)} injury records for {game_date}")
-        return injury_data
-    
-    except Exception as e:
-        # Cache empty result on error (likely 403 - report doesn't exist yet)
-        # This prevents spamming the API with repeated failed requests
-        _cache_injuries(game_date, [])
-        
-        # Only log once per date to avoid spam
-        if str(game_date) not in _injury_cache or len(_injury_cache) < 2:
-            logger.debug(f"Injury report not available for {game_date}: {str(e)[:50]}")
-        
-        return []
+    return []
 
 
 def get_player_injury_status(
@@ -141,14 +203,21 @@ def get_player_injury_status(
     
     injuries = fetch_todays_injuries(game_date)
     
+    status = _find_status_for_player(player.name, injuries)
+    if not status:
+        return None
+
+    # Keep loose team check as a sanity filter when team field is present.
     for inj in injuries:
-        name_match = _name_similarity(player.name, inj.get('Player Name', '')) >= 0.85
-        team_match = team.name in inj.get('Team', '') or team.abbreviation in inj.get('Team', '')
-        
-        if name_match and team_match:
-            return inj.get('Current Status')
-    
-    return None
+        if not isinstance(inj, dict):
+            continue
+        if _name_similarity(player.name, inj.get('Player Name', '')) < 0.85:
+            continue
+        team_field = str(inj.get('Team', ''))
+        if not team_field or team.name in team_field or team.abbreviation in team_field:
+            return status
+
+    return status
 
 
 def calculate_injury_impact_factor(
@@ -171,24 +240,30 @@ def calculate_injury_impact_factor(
     if not player:
         return 1.0
     
-    # Get player's recent average usage rate
-    recent_games = (
-        db.query(PlayerGameStats)
-        .join(Game, PlayerGameStats.game_id == Game.id)
-        .filter(
-            PlayerGameStats.player_id == player_id,
-            PlayerGameStats.minutes >= 15,
-            PlayerGameStats.usage_rate != None,
+    cache_date = game_date or date.today()
+    usage_cache_key = f"{cache_date}:{player_id}"
+
+    # Get player's recent average usage rate (cached)
+    player_usage = _get_cached_usage(_player_usage_cache, usage_cache_key)
+    if player_usage is None:
+        recent_games = (
+            db.query(PlayerGameStats)
+            .join(Game, PlayerGameStats.game_id == Game.id)
+            .filter(
+                PlayerGameStats.player_id == player_id,
+                PlayerGameStats.minutes >= 15,
+                PlayerGameStats.usage_rate != None,
+            )
+            .order_by(desc(Game.date))
+            .limit(10)
+            .all()
         )
-        .order_by(desc(Game.date))
-        .limit(10)
-        .all()
-    )
-    
-    if not recent_games:
-        return 1.0
-    
-    player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
+
+        if not recent_games:
+            return 1.0
+
+        player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
+        _set_cached_usage(_player_usage_cache, usage_cache_key, player_usage)
     
     # Get all active teammates
     teammates = (
@@ -203,49 +278,68 @@ def calculate_injury_impact_factor(
     
     # Use cached injury data
     injuries = fetch_todays_injuries(game_date)
-    
-    # If no injury data, return neutral (avoids spamming failed requests)
+
+    # Fallback: when external injury feed is unavailable/invalid, infer likely
+    # absences from most recent completed team game so injury factor still works.
+    inferred_out_ids = set()
     if not injuries:
+        inferred_out_ids = _infer_recent_absent_teammates(
+            db=db,
+            team_id=player.team_id,
+            game_date=cache_date,
+        )
+    
+    # If no injury data and no inferred absences, return neutral.
+    if not injuries and not inferred_out_ids:
         return 1.0
     
+    # Keep raw injuries list; lookup handles first/last vs last,first formats.
+
+    team_usage_cache_key = f"{cache_date}:{player.team_id}"
+    team_usage_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
+    if team_usage_map is None:
+        team_usage_map = {}
+        for teammate in teammates:
+            tm_games = (
+                db.query(PlayerGameStats)
+                .join(Game, PlayerGameStats.game_id == Game.id)
+                .filter(
+                    PlayerGameStats.player_id == teammate.id,
+                    PlayerGameStats.minutes >= 15,
+                    PlayerGameStats.usage_rate != None,
+                )
+                .order_by(desc(Game.date))
+                .limit(10)
+                .all()
+            )
+            if tm_games:
+                team_usage_map[teammate.id] = sum(g.usage_rate for g in tm_games) / len(tm_games)
+        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_usage_map)
+
     missing_usage = 0.0
     healthy_teammates = []
     
     for teammate in teammates:
         # Check injury status
-        status = None
-        for inj in injuries:
-            if isinstance(inj, dict):
-                player_name = inj.get("Player Name", "")
-            else:
-                continue
+        status = _find_status_for_player(teammate.name, injuries)
+        tm_usage = team_usage_map.get(teammate.id)
 
-            if _name_similarity(teammate.name, player_name) >= 0.85:
-                status = inj.get('Current Status')
-                break
-        
-        # Get teammate's average usage
-        tm_games = (
-            db.query(PlayerGameStats)
-            .join(Game, PlayerGameStats.game_id == Game.id)
-            .filter(
-                PlayerGameStats.player_id == teammate.id,
-                PlayerGameStats.minutes >= 15,
-                PlayerGameStats.usage_rate != None,
-            )
-            .order_by(desc(Game.date))
-            .limit(10)
-            .all()
-        )
-        
-        if not tm_games:
+        if tm_usage is None:
             continue
         
-        tm_usage = sum(g.usage_rate for g in tm_games) / len(tm_games)
-        
+        inferred_out = teammate.id in inferred_out_ids
+
         if status in ['Out', 'Doubtful'] and tm_usage > 20.0:
             missing_usage += tm_usage
             logger.info(f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage) - redistributing")
+        elif inferred_out and tm_usage > 20.0:
+            # Fallback signal is weaker than official injury status.
+            inferred_missing = tm_usage * 0.6
+            missing_usage += inferred_missing
+            logger.info(
+                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, "
+                f"counting {inferred_missing:.1f}%)"
+            )
         else:
             healthy_teammates.append((teammate.id, tm_usage))
     
@@ -272,3 +366,53 @@ def calculate_injury_impact_factor(
         )
     
     return usage_boost_factor
+
+
+def _infer_recent_absent_teammates(
+    db: Session,
+    team_id: int,
+    game_date: date,
+) -> set[int]:
+    """
+    Infer likely absences from the team's most recent completed game.
+
+    This acts as a fallback when the external injury feed fails validation.
+    """
+    from app.models.player import Player, PlayerGameStats, Game
+
+    last_game = (
+        db.query(Game)
+        .filter(
+            ((Game.home_team_id == team_id) | (Game.away_team_id == team_id)),
+            Game.home_score != None,
+            Game.date < game_date,
+        )
+        .order_by(desc(Game.date))
+        .first()
+    )
+
+    if not last_game:
+        return set()
+
+    team_player_ids = {
+        p.id
+        for p in db.query(Player.id).filter(
+            Player.team_id == team_id,
+            Player.is_active == True,
+        ).all()
+    }
+    if not team_player_ids:
+        return set()
+
+    played_ids = {
+        s.player_id
+        for s in db.query(PlayerGameStats.player_id)
+        .filter(
+            PlayerGameStats.game_id == last_game.id,
+            PlayerGameStats.player_id.in_(team_player_ids),
+            PlayerGameStats.minutes >= 1,
+        )
+        .all()
+    }
+
+    return team_player_ids - played_ids

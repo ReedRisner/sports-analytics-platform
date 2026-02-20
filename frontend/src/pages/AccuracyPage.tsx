@@ -101,6 +101,7 @@ export default function AccuracyPage() {
               onChange={(e) => setDaysBack(Number(e.target.value))}
               className="w-full px-3 py-2 rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary"
             >
+              <option value={1}>Yesterday</option>
               <option value={7}>Last 7 Days</option>
               <option value={14}>Last 14 Days</option>
               <option value={30}>Last 30 Days</option>

@@ -47,11 +47,13 @@ def _projection_to_dict(proj) -> dict:
                 "ast_allowed": round(m.ast_allowed, 2) if m.ast_allowed else None,
                 "stl_allowed": round(m.stl_allowed, 2) if m.stl_allowed else None,
                 "blk_allowed": round(m.blk_allowed, 2) if m.blk_allowed else None,
+                "three_pointers_made_allowed": round(m.three_pointers_made_allowed, 2) if m.three_pointers_made_allowed else None,
                 "pts_rank":    m.pts_rank,
                 "reb_rank":    m.reb_rank,
                 "ast_rank":    m.ast_rank,
                 "stl_rank":    m.stl_rank,
                 "blk_rank":    m.blk_rank,
+                "three_pointers_made_rank": m.three_pointers_made_rank,
             },
         }
 

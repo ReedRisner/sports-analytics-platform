@@ -10,6 +10,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
+from app.services.schema_compat import ensure_projection_history_schema
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +23,8 @@ def grade_yesterdays_projections(db: Session, target_date: Optional[date] = None
     """
     from app.models.player import Player, PlayerGameStats, Game
     from app.models.projections import ProjectionHistory, ProjectionResult
+
+    ensure_projection_history_schema(db)
     
     if target_date is None:
         target_date = date.today() - timedelta(days=1)

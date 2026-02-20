@@ -35,6 +35,7 @@ class ProjectionHistory(Base):
     home_factor = Column(Float)
     rest_factor = Column(Float)
     blowout_factor = Column(Float)
+    injury_factor = Column(Float)
     
     line_value = Column(Float)
     sportsbook = Column(String(50))
