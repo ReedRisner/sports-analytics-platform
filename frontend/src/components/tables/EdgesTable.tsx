@@ -123,7 +123,7 @@ export function EdgesTable({ edges, isLoading }: EdgesTableProps) {
                   )}
                 </td>
                 <td className="p-4 text-center">
-                  {edge.streak && edge.streak.current_streak >= 3 ? (
+                  {edge.streak && edge.streak.current_streak > 0 ? (
                     <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold ${
                       edge.streak.streak_type === 'hit'
                         ? 'bg-green-500/20 text-green-400'
