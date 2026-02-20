@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Optional
+from datetime import date as date_type
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -525,6 +526,26 @@ def project_player(
     opp_strength   = 1.0
     is_back_to_back = False
 
+    # Auto-infer opponent/game context when not explicitly provided.
+    if not opp_team_id:
+        inferred_game = (
+            db.query(Game)
+            .filter(
+                ((Game.home_team_id == player.team_id) | (Game.away_team_id == player.team_id)),
+                Game.date >= (game_date or date_type.today()),
+            )
+            .order_by(Game.date)
+            .first()
+        )
+        if inferred_game:
+            game_id = game_id or inferred_game.id
+            game_date = game_date or inferred_game.date
+            opp_team_id = (
+                inferred_game.away_team_id
+                if inferred_game.home_team_id == player.team_id
+                else inferred_game.home_team_id
+            )
+
     if opp_team_id:
         matchup = get_matchup_context(db, player, opp_team_id, stat_type)
         if matchup:
@@ -533,7 +554,6 @@ def project_player(
             adjusted = base * pace_factor * matchup_factor
 
         if not game_id:
-            from datetime import date as date_type
             upcoming = (
                 db.query(Game)
                 .filter(
@@ -551,8 +571,11 @@ def project_player(
         rest_factor, is_back_to_back = _rest_factor(db, player, game_date=game_date if 'game_date' in locals() else None)
         blowout_factor = _blowout_factor_vegas(db, player, opp_team_id, game_id)
         
-        from datetime import date as date_type
-        injury_factor  = calculate_injury_impact_factor(db, player_id, game_date=date_type.today())
+        injury_factor  = calculate_injury_impact_factor(
+            db,
+            player_id,
+            game_date=game_date or date_type.today(),
+        )
         form_factor    = _recent_form_factor(values)
         opp_strength   = _opponent_strength_factor(db, opp_team_id)
 

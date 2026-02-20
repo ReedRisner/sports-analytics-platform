@@ -58,8 +58,11 @@ export interface Projection {
     home_factor: number
     rest_factor: number
     blowout_factor: number
+    injury_factor: number
+    form_factor: number
+    opp_strength: number
     is_back_to_back: boolean
-    days_rest: number
+    days_rest?: number
   }
 }
 
@@ -87,6 +90,8 @@ export interface MatchupContext {
     ast_rank?: number
     stl_rank?: number
     blk_rank?: number
+    three_pointers_made_allowed?: number
+    three_pointers_made_rank?: number
   }
 }
 

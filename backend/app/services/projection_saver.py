@@ -6,6 +6,7 @@ Save projections to database for later grading.
 from sqlalchemy.orm import Session
 from app.models.projections import ProjectionHistory
 from app.services.projection_engine import Projection
+from app.services.schema_compat import ensure_projection_history_schema
 
 
 def save_projection(
@@ -21,6 +22,8 @@ def save_projection(
     
     Call this whenever user views a projection or edge finder runs.
     """
+    ensure_projection_history_schema(db)
+
     existing = db.query(ProjectionHistory).filter(
         ProjectionHistory.player_id == proj.player_id,
         ProjectionHistory.game_id == game_id,
@@ -54,6 +57,7 @@ def save_projection(
         home_factor=proj.home_factor,
         rest_factor=proj.rest_factor,
         blowout_factor=proj.blowout_factor,
+        injury_factor=proj.injury_factor,
         line_value=line,
         sportsbook=sportsbook,
         edge_pct=proj.edge_pct,
