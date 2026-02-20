@@ -125,6 +125,92 @@ def _find_status_for_player(player_name: str, injuries: list) -> Optional[str]:
     return best_status if best_score >= 0.85 else None
 
 
+def _team_matches_injury_record(team_name: str, team_abbreviation: str, injury_record: dict) -> bool:
+    """Check whether an injury record likely belongs to the provided NBA team."""
+    team_field = str(injury_record.get("Team", "") or "").strip().lower()
+    if not team_field:
+        return False
+
+    normalized_name = str(team_name or "").strip().lower()
+    normalized_abbr = str(team_abbreviation or "").strip().lower()
+
+    return (
+        (normalized_name and normalized_name in team_field)
+        or (normalized_abbr and normalized_abbr in team_field)
+    )
+
+
+def _find_status_for_player_and_team(
+    player_name: str,
+    team_name: str,
+    team_abbreviation: str,
+    injuries: list,
+) -> Optional[str]:
+    """
+    Find injury status for a player while preferring records that match the team.
+
+    This prevents false negatives/positives when name matching is ambiguous.
+    """
+    normalized_target = _normalize_name(player_name)
+    if not normalized_target:
+        return None
+
+    best_any_status = None
+    best_any_score = 0.0
+    best_team_status = None
+    best_team_score = 0.0
+
+    for inj in injuries:
+        if not isinstance(inj, dict):
+            continue
+
+        injury_name = inj.get("Player Name", "")
+        status = inj.get("Current Status")
+        if not injury_name or not status:
+            continue
+
+        score = _name_similarity(normalized_target, injury_name)
+        if score > best_any_score:
+            best_any_score = score
+            best_any_status = status
+
+        if _team_matches_injury_record(team_name, team_abbreviation, inj) and score > best_team_score:
+            best_team_score = score
+            best_team_status = status
+
+    if best_team_score >= 0.85:
+        return best_team_status
+    if best_any_score >= 0.85:
+        return best_any_status
+    return None
+
+
+def _filter_injuries_for_team(team_name: str, team_abbreviation: str, injuries: list) -> list:
+    """Return only injury feed rows that appear to belong to the provided team."""
+    if not injuries:
+        return []
+    return [
+        inj for inj in injuries
+        if isinstance(inj, dict) and _team_matches_injury_record(team_name, team_abbreviation, inj)
+    ]
+
+
+def _status_indicates_unavailable(status: Optional[str]) -> bool:
+    """Return True when a feed status should count as an inactive player."""
+    normalized = str(status or "").strip().lower()
+    if not normalized:
+        return False
+
+    # Covers values like "Out", "Out For Season", "DOUBTFUL", "Inactive".
+    unavailable_keywords = ("out", "doubt", "inactive", "suspended", "g league")
+    if any(keyword in normalized for keyword in unavailable_keywords):
+        return True
+
+    # Explicitly don't count game-time/availability statuses.
+    available_keywords = ("questionable", "probable", "available", "active")
+    return not any(keyword in normalized for keyword in available_keywords)
+
+
 def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
     """
     Fetch NBA injury report for a specific date.
@@ -162,7 +248,7 @@ def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
             injury_data = injury.get_reportdata(report_time)
             if injury_data:
                 _cache_injuries(game_date, injury_data)
-                logger.info(
+                logger.debug(
                     f"✓ Fetched {len(injury_data)} injury records for {game_date} "
                     f"(snapshot {report_time:%Y-%m-%d %I:%M%p})"
                 )
@@ -205,13 +291,19 @@ def get_player_injury_status(
         return None
 
     injuries = fetch_todays_injuries(game_date)
+    team_injuries = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
 
-    status = _find_status_for_player(player.name, injuries)
+    status = _find_status_for_player_and_team(
+        player_name=player.name,
+        team_name=team.name,
+        team_abbreviation=team.abbreviation,
+        injuries=team_injuries or injuries,
+    )
     if not status:
         return None
 
     # Keep loose team check as a sanity filter when team field is present.
-    for inj in injuries:
+    for inj in (team_injuries or injuries):
         if not isinstance(inj, dict):
             continue
         if _name_similarity(player.name, inj.get("Player Name", "")) < 0.85:
@@ -237,18 +329,32 @@ def calculate_injury_impact_factor(
         # Return neutral factor - no injury data available
         return 1.0
 
-    from app.models.player import Player, PlayerGameStats, Game
+    from app.models.player import Player, PlayerGameStats, Game, Team
 
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         return 1.0
 
+    team = db.query(Team).filter(Team.id == player.team_id).first()
+    if not team:
+        return 1.0
+
     cache_date = game_date or date.today()
     usage_cache_key = f"{cache_date}:{player_id}"
 
-    # Get player's recent average usage rate (cached)
-    player_usage = _get_cached_usage(_player_usage_cache, usage_cache_key)
-    if player_usage is None:
+    # Get player's recent usage/minutes context (cached)
+    player_context = _get_cached_usage(_player_usage_cache, usage_cache_key)
+    player_usage = None
+    player_minutes = None
+
+    if isinstance(player_context, dict):
+        player_usage = player_context.get("usage")
+        player_minutes = player_context.get("minutes")
+    elif isinstance(player_context, (int, float)):
+        # Backward compatibility for prior cache format.
+        player_usage = float(player_context)
+
+    if player_usage is None or player_minutes is None:
         recent_games = (
             db.query(PlayerGameStats)
             .join(Game, PlayerGameStats.game_id == Game.id)
@@ -266,7 +372,15 @@ def calculate_injury_impact_factor(
             return 1.0
 
         player_usage = sum(g.usage_rate for g in recent_games) / len(recent_games)
-        _set_cached_usage(_player_usage_cache, usage_cache_key, player_usage)
+        player_minutes = sum(g.minutes for g in recent_games) / len(recent_games)
+        _set_cached_usage(
+            _player_usage_cache,
+            usage_cache_key,
+            {"usage": player_usage, "minutes": player_minutes},
+        )
+
+    # Weight by role: players with bigger minute loads absorb more vacated usage.
+    player_minutes_weight = max(0.4, min(1.3, (player_minutes or 24.0) / 30.0))
 
     # Get all active teammates
     teammates = (
@@ -281,11 +395,12 @@ def calculate_injury_impact_factor(
 
     # Use cached injury data
     injuries = fetch_todays_injuries(game_date)
+    team_injuries = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
 
     # Fallback: when external injury feed is unavailable/invalid, infer likely
     # absences from most recent completed team game so injury factor still works.
     inferred_out_ids = set()
-    if not injuries:
+    if not team_injuries:
         inferred_out_ids = _infer_recent_absent_teammates(
             db=db,
             team_id=player.team_id,
@@ -293,14 +408,14 @@ def calculate_injury_impact_factor(
         )
 
     # If no injury data and no inferred absences, return neutral.
-    if not injuries and not inferred_out_ids:
+    if not team_injuries and not inferred_out_ids:
         return 1.0
 
     # Keep raw injuries list; lookup handles first/last vs last,first formats.
     team_usage_cache_key = f"{cache_date}:{player.team_id}"
-    team_usage_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
-    if team_usage_map is None:
-        team_usage_map = {}
+    team_context_map = _get_cached_usage(_team_usage_cache, team_usage_cache_key)
+    if team_context_map is None:
+        team_context_map = {}
         for teammate in teammates:
             tm_games = (
                 db.query(PlayerGameStats)
@@ -315,45 +430,79 @@ def calculate_injury_impact_factor(
                 .all()
             )
             if tm_games:
-                team_usage_map[teammate.id] = sum(g.usage_rate for g in tm_games) / len(tm_games)
-        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_usage_map)
+                tm_usage = sum(g.usage_rate for g in tm_games) / len(tm_games)
+                tm_minutes = sum(g.minutes for g in tm_games) / len(tm_games)
+                team_context_map[teammate.id] = {
+                    "usage": tm_usage,
+                    "minutes": tm_minutes,
+                }
+        _set_cached_usage(_team_usage_cache, team_usage_cache_key, team_context_map)
 
-    missing_usage = 0.0
+    missing_weighted_usage = 0.0
     healthy_teammates = []
 
     for teammate in teammates:
         # Check injury status
-        status = _find_status_for_player(teammate.name, injuries)
-        tm_usage = team_usage_map.get(teammate.id)
+        status = _find_status_for_player_and_team(
+            player_name=teammate.name,
+            team_name=team.name,
+            team_abbreviation=team.abbreviation,
+            injuries=team_injuries or injuries,
+        )
+        tm_context = team_context_map.get(teammate.id)
+        if isinstance(tm_context, dict):
+            tm_usage = tm_context.get("usage")
+            tm_minutes = tm_context.get("minutes")
+        elif isinstance(tm_context, (int, float)):
+            # Backward compatibility for prior cache format.
+            tm_usage = float(tm_context)
+            tm_minutes = 24.0
+        else:
+            tm_usage = None
+            tm_minutes = None
 
         if tm_usage is None:
             continue
 
+        minute_weight = max(0.35, min(1.35, (tm_minutes or 24.0) / 30.0))
+        tm_weighted_usage = tm_usage * minute_weight
+
         inferred_out = teammate.id in inferred_out_ids
 
-        if status in ["Out", "Doubtful"] and tm_usage > 20.0:
-            missing_usage += tm_usage
-            logger.info(f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage) - redistributing")
-        elif inferred_out and tm_usage > 20.0:
-            # Fallback signal is weaker than official injury status.
-            inferred_missing = tm_usage * 0.6
-            missing_usage += inferred_missing
-            logger.info(
-                f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, "
-                f"counting {inferred_missing:.1f}%)"
+        # Minutes-led inclusion: absences from steady rotation players should count
+        # even when usage isn't star-level.
+        is_core_rotation = (tm_minutes or 0) >= 18.0
+
+        if _status_indicates_unavailable(status) and is_core_rotation:
+            missing_weighted_usage += tm_weighted_usage
+            logger.debug(
+                f"✓ {teammate.name} OUT ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg) - "
+                f"redistributing {tm_weighted_usage:.1f} weighted usage"
             )
+        elif inferred_out and is_core_rotation:
+            # Fallback signal is weaker than official injury status.
+            inferred_missing = tm_weighted_usage * 0.6
+            missing_weighted_usage += inferred_missing
+            if inferred_missing >= 1.0:
+                logger.debug(
+                    f"~ {teammate.name} inferred absent ({tm_usage:.1f}% usage, {tm_minutes or 0:.1f} mpg, "
+                    f"counting {inferred_missing:.1f} weighted usage)"
+                )
         else:
-            healthy_teammates.append((teammate.id, tm_usage))
+            healthy_teammates.append((teammate.id, tm_weighted_usage))
 
-    if missing_usage == 0 or not healthy_teammates:
+    if missing_weighted_usage == 0 or not healthy_teammates:
         return 1.0
 
-    total_healthy_usage = sum(usg for _, usg in healthy_teammates)
+    total_healthy_weighted_usage = sum(weighted_usg for _, weighted_usg in healthy_teammates)
 
-    if total_healthy_usage == 0:
+    if total_healthy_weighted_usage == 0:
         return 1.0
 
-    redistribution_share = (player_usage / total_healthy_usage) * missing_usage
+    player_weighted_usage = player_usage * player_minutes_weight
+    redistribution_share = (
+        (player_weighted_usage / total_healthy_weighted_usage) * missing_weighted_usage
+    )
 
     # 5% usage increase ≈ 8-10% stat increase
     usage_boost_factor = 1.0 + (redistribution_share / player_usage) * 0.85
@@ -362,9 +511,9 @@ def calculate_injury_impact_factor(
     usage_boost_factor = min(1.15, usage_boost_factor)
 
     if usage_boost_factor > 1.02:
-        logger.info(
+        logger.debug(
             f"✓ {player.name} injury boost: {usage_boost_factor:.3f}x "
-            f"({missing_usage:.1f}% missing usage)"
+            f"({missing_weighted_usage:.1f} weighted missing usage)"
         )
 
     return usage_boost_factor
