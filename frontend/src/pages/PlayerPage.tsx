@@ -7,6 +7,7 @@ import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap } from 'lucide-react'
 import GameLogChart from '@/components/projections/GameLogChart'
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { STAT_EXPLANATIONS } from '@/lib/stat-explanations'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts'
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>()
@@ -447,7 +448,7 @@ export default function PlayerPage() {
               {projection.matchup.defense && (
                 <div className="pt-3 border-t border-border">
                   <div className="text-xs text-muted-foreground mb-2">Defense vs Position</div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     {projection.matchup.defense.pts_allowed !== undefined && (
                       <div className="text-sm">
                         <span className="text-muted-foreground">PTS: </span>
@@ -472,6 +473,33 @@ export default function PlayerPage() {
                         <span className="font-mono">{projection.matchup.defense.ast_allowed.toFixed(1)}</span>
                         {projection.matchup.defense.ast_rank && (
                           <span className="text-xs text-muted-foreground ml-1">(#{projection.matchup.defense.ast_rank})</span>
+                        )}
+                      </div>
+                    )}
+                    {projection.matchup.defense.stl_allowed !== undefined && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">STL: </span>
+                        <span className="font-mono">{projection.matchup.defense.stl_allowed.toFixed(1)}</span>
+                        {projection.matchup.defense.stl_rank && (
+                          <span className="text-xs text-muted-foreground ml-1">(#{projection.matchup.defense.stl_rank})</span>
+                        )}
+                      </div>
+                    )}
+                    {projection.matchup.defense.blk_allowed !== undefined && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">BLK: </span>
+                        <span className="font-mono">{projection.matchup.defense.blk_allowed.toFixed(1)}</span>
+                        {projection.matchup.defense.blk_rank && (
+                          <span className="text-xs text-muted-foreground ml-1">(#{projection.matchup.defense.blk_rank})</span>
+                        )}
+                      </div>
+                    )}
+                    {projection.matchup.defense.three_pointers_made_allowed != null && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">3PM: </span>
+                        <span className="font-mono">{projection.matchup.defense.three_pointers_made_allowed.toFixed(1)}</span>
+                        {projection.matchup.defense.three_pointers_made_rank && (
+                          <span className="text-xs text-muted-foreground ml-1">(#{projection.matchup.defense.three_pointers_made_rank})</span>
                         )}
                       </div>
                     )}
@@ -580,14 +608,268 @@ export default function PlayerPage() {
           </div>
         </div>
 
-        <GameLogChart 
-          games={gameLog || []}
-          statType={selectedStat as any}
-          line={playerOdds?.line}
-          filter={gameLogFilter}
-          opponentAbbr={projection?.matchup?.opp_abbr}
-          nextGameProjection={projection?.projected}
-        />
+
+
+{/* Inline Game Log Bar Chart */}
+{gameLog && gameLog.length > 0 && (
+  <div className="space-y-4">
+    {(() => {
+      // Filter games based on selection
+      let filteredGames = [...gameLog]
+      
+      if (gameLogFilter === 'l5') {
+        filteredGames = filteredGames.slice(0, 5)
+      } else if (gameLogFilter === 'l10') {
+        filteredGames = filteredGames.slice(0, 10)
+      } else if (gameLogFilter === 'vs_opp' && projection?.matchup?.opp_abbr) {
+        // Filter to only games vs the upcoming opponent
+        filteredGames = filteredGames.filter((game: any) => 
+          game.opp_abbr === projection.matchup.opp_abbr
+        )
+      }
+      
+      const chartData = filteredGames
+        .map((game: any, index: number) => {
+          let value = 0
+          // EXPLICIT HANDLING FOR EACH STAT TYPE
+          if (selectedStat === 'threes') {
+            value = Number(game.fg3m) || Number(game.three_pointers_made) || 0
+          } else if (selectedStat === 'points') {
+            value = Number(game.points) || 0
+          } else if (selectedStat === 'rebounds') {
+            value = Number(game.rebounds) || 0
+          } else if (selectedStat === 'assists') {
+            value = Number(game.assists) || 0
+          } else if (selectedStat === 'steals') {
+            value = Number(game.steals) || 0
+          } else if (selectedStat === 'blocks') {
+            value = Number(game.blocks) || 0
+          } else if (selectedStat === 'pra') {
+            value = Number(game.pra) || 0
+          } else if (selectedStat === 'pr') {
+            value = Number(game.pr) || 0
+          } else if (selectedStat === 'pa') {
+            value = Number(game.pa) || 0
+          } else if (selectedStat === 'ra') {
+            value = Number(game.ra) || 0
+          }
+          
+          return {
+            game: `G${filteredGames.length - index}`,
+            date: (() => {
+              const [year, month, day] = game.date.split('-')
+              const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+              return `${months[Number(month) - 1]} ${Number(day)}`
+            })(),
+            opponent: game.opp_abbr,
+            value,
+            hit: playerOdds?.line ? value > playerOdds.line : undefined,
+            result: game.result,
+            isProjection: false,
+          }
+        })
+        .reverse() // Reverse to show oldest to newest (left to right)
+      
+      // Add projection column if available
+      if (projection?.projected && projection?.matchup?.opp_abbr) {
+        chartData.push({
+          game: 'Next',
+          date: 'Projection',
+          opponent: projection.matchup.opp_abbr,
+          value: projection.projected,
+          hit: playerOdds?.line ? projection.projected > playerOdds.line : undefined,
+          result: '—',
+          isProjection: true,
+        })
+      }
+      
+      // Calculate average (exclude projection)
+      const historicalGames = chartData.filter((d: any) => !d.isProjection)
+      const average = historicalGames.length > 0 
+        ? historicalGames.reduce((sum: number, d: any) => sum + d.value, 0) / historicalGames.length 
+        : 0
+      
+      return (
+        <>
+          {/* Stats Summary */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className="rounded-lg border border-border p-3 bg-card">
+              <div className="text-xs text-muted-foreground">Average</div>
+              <div className="text-2xl font-bold font-mono">{average.toFixed(1)}</div>
+            </div>
+            {playerOdds?.line && historicalGames.length > 0 && (
+              <>
+                <div className="rounded-lg border border-border p-3 bg-card">
+                  <div className="text-xs text-muted-foreground">Hit Rate</div>
+                  <div className="text-2xl font-bold font-mono text-green-400">
+                    {((historicalGames.filter((d: any) => d.hit).length / historicalGames.length) * 100).toFixed(0)}%
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border p-3 bg-card">
+                  <div className="text-xs text-muted-foreground">Hits / Games</div>
+                  <div className="text-2xl font-bold font-mono">
+                    {historicalGames.filter((d: any) => d.hit).length} / {historicalGames.length}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Bar Chart */}
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis 
+                  dataKey="game" 
+                  stroke="hsl(var(--muted-foreground))"
+                  style={{ fontSize: '12px' }}
+                />
+                <YAxis 
+                  stroke="hsl(var(--muted-foreground))"
+                  style={{ fontSize: '12px' }}
+                />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'hsl(var(--card))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '8px'
+                  }}
+                  labelStyle={{ color: 'hsl(var(--foreground))' }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || !payload.length) return null
+                    const data = payload[0].payload
+                    
+                    if (data.isProjection) {
+                      return (
+                        <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
+                          <div className="font-semibold mb-2 text-primary">Next Game Projection</div>
+                          <div className="space-y-1 text-sm">
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-muted-foreground">vs {data.opponent}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <span className="text-muted-foreground">
+                                {selectedStat === 'threes' ? '3PM' : selectedStat.toUpperCase()}:
+                              </span>
+                              <span className="font-mono font-bold">{data.value.toFixed(1)}</span>
+                            </div>
+                            {playerOdds?.line && (
+                              <div className="flex items-center justify-between gap-4 pt-2 border-t border-border">
+                                <span className="text-muted-foreground">Line: {playerOdds.line}</span>
+                                <span className={`font-bold ${data.hit ? 'text-green-400' : 'text-red-400'}`}>
+                                  {data.hit ? 'Projected OVER' : 'Projected UNDER'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    }
+                    
+                    return (
+                      <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
+                        <div className="font-semibold mb-2">{data.date}</div>
+                        <div className="space-y-1 text-sm">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-muted-foreground">vs {data.opponent}</span>
+                            <span className="font-bold">{data.result}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-muted-foreground">
+                              {selectedStat === 'threes' ? '3PM' : selectedStat.toUpperCase()}:
+                            </span>
+                            <span className="font-mono font-bold">{data.value}</span>
+                          </div>
+                          {playerOdds?.line && (
+                            <div className="flex items-center justify-between gap-4 pt-2 border-t border-border">
+                              <span className="text-muted-foreground">Line: {playerOdds.line}</span>
+                              <span className={`font-bold ${data.hit ? 'text-green-400' : 'text-red-400'}`}>
+                                {data.hit ? '✓ HIT' : '✗ MISS'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  }}
+                />
+                
+                {/* Betting line */}
+                {playerOdds?.line && (
+                  <ReferenceLine 
+                    y={playerOdds.line} 
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    label={{ 
+                      value: `Line: ${playerOdds.line}`, 
+                      position: 'right',
+                      fill: '#3b82f6',
+                      fontSize: 14,
+                      fontWeight: 'bold'
+                    }}
+                  />
+                )}
+                
+                {/* Average line */}
+                <ReferenceLine 
+                  y={average} 
+                  stroke="#9ca3af"
+                  strokeDasharray="5 5"
+                  strokeWidth={1.5}
+                  label={{ 
+                    value: `Avg: ${average.toFixed(1)}`, 
+                    position: 'left',
+                    fill: '#9ca3af',
+                    fontSize: 12
+                  }}
+                />
+                
+                {/* Bars colored by hit/miss or gray for projection */}
+                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                  {chartData.map((entry: any, index: number) => {
+                    let color: string
+                    
+                    // Projection column is gray
+                    if (entry.isProjection) {
+                      color = 'hsl(var(--muted))' // Gray for projection
+                    } else if (entry.hit === undefined) {
+                      color = 'hsl(var(--primary))' // No line - use primary color
+                    } else if (entry.hit) {
+                      color = 'hsl(142.1 76.2% 36.3%)' // Green for hit
+                    } else {
+                      color = 'hsl(0 84.2% 60.2%)' // Red for miss
+                    }
+                    
+                    return <Cell key={`cell-${index}`} fill={color} />
+                  })}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Legend */}
+          {playerOdds?.line && (
+            <div className="flex items-center justify-center gap-6 text-sm">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded bg-green-500" />
+                <span className="text-muted-foreground">Hit Over</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded bg-red-500" />
+                <span className="text-muted-foreground">Missed Over</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded bg-muted" />
+                <span className="text-muted-foreground">Next Game Projection</span>
+              </div>
+            </div>
+          )}
+        </>
+      )
+    })()}
+  </div>
+)}
       </div>
 
       {/* Monte Carlo Simulation */}

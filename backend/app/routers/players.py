@@ -276,23 +276,25 @@ def player_all_projections(
 # Place it AFTER the player_all_projections function
 # ──────────────────────────────────────────────────────────────────────────────
 
-# ── GET /players/{player_id}/game-log ────────────────────────────────────────
+# backend/app/routers/players.py
+# Update the /players/{player_id}/game-log endpoint to include all stats
+
 @router.get("/{player_id}/game-log")
-def player_game_log(
+def get_player_game_log(
+    
     player_id: int,
-    last: int = Query(20, ge=1, le=82, description="Number of recent games"),
+    last: int = Query(20, description="Number of recent games to return"),
     db: Session = Depends(get_db),
 ):
     """
-    Returns recent game logs for a player.
-    Used by the frontend GameLogChart component.
+    Get recent game log for a player with all stats including combos.
+    Returns games in reverse chronological order (most recent first).
     """
-    player = db.query(Player).filter(Player.id == player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    # Query recent games
-    recent_rows = (
+    from app.models.player import PlayerGameStats, Game
+    from sqlalchemy import desc
+    
+    # Fetch recent games
+    game_stats = (
         db.query(PlayerGameStats, Game)
         .join(Game, PlayerGameStats.game_id == Game.id)
         .filter(PlayerGameStats.player_id == player_id)
@@ -300,38 +302,84 @@ def player_game_log(
         .limit(last)
         .all()
     )
-
-    game_log = []
-    for stat, game in recent_rows:
+    
+    if not game_stats:
+        return []
+    
+    # Get player's team to determine opponents
+    from app.models.player import Player
+    player = db.query(Player).filter(Player.id == player_id).first()
+    
+    result = []
+    for stat, game in game_stats:
         # Determine opponent
-        home = db.query(Team).filter(Team.id == game.home_team_id).first()
-        away = db.query(Team).filter(Team.id == game.away_team_id).first()
-        is_home = game.home_team_id == player.team_id
-        opp = away if is_home else home
-
-        # Determine result
-        if game.home_score is not None and game.away_score is not None:
-            my_score = game.home_score if is_home else game.away_score
-            opp_score = game.away_score if is_home else game.home_score
-            result = "W" if my_score > opp_score else "L"
+        if player and player.team_id == game.home_team_id:
+            opp_team_id = game.away_team_id
+            is_home = True
         else:
-            result = "—"
-
-        game_log.append({
+            opp_team_id = game.home_team_id
+            is_home = False
+        
+        # Get opponent abbreviation
+        from app.models.player import Team
+        opp_team = db.query(Team).filter(Team.id == opp_team_id).first()
+        opp_abbr = opp_team.abbreviation if opp_team else "???"
+        
+        # Determine result
+        if game.status == "final":
+            if is_home:
+                won = game.home_score > game.away_score
+            else:
+                won = game.away_score > game.home_score
+            result_str = "W" if won else "L"
+        else:
+            result_str = "SCH"
+        
+        # Build response with ALL stats
+        result.append({
             "game_id": game.id,
             "date": str(game.date),
-            "opponent": opp.abbreviation if opp else "?",
-            "points": stat.points or 0,
-            "rebounds": stat.rebounds or 0,
-            "assists": stat.assists or 0,
-            "steals": stat.steals or 0,
-            "blocks": stat.blocks or 0,
-            "minutes": round(_safe(stat.minutes), 1),
-            "result": result
+            "opponent": opp_team.name if opp_team else "Unknown",
+            "opp_abbr": opp_abbr,
+            "is_home": is_home,
+            "result": result_str,
+            
+            # Basic stats
+            "minutes": stat.minutes,
+            "points": stat.points,
+            "rebounds": stat.rebounds,
+            "assists": stat.assists,
+            "steals": stat.steals,
+            "blocks": stat.blocks,
+            
+            # Shooting stats
+            "fgm": stat.fgm,
+            "fga": stat.fga,
+            "fg_pct": stat.fg_pct,
+            "fg3m": stat.fg3m,  # ← 3-POINTERS MADE
+            "fg3a": stat.fg3a,
+            "fg3_pct": stat.fg3_pct,
+            "ftm": stat.ftm,
+            "fta": stat.fta,
+            "ft_pct": stat.ft_pct,
+            
+            # Other stats
+            "oreb": stat.oreb,
+            "dreb": stat.dreb,
+            "turnovers": stat.turnovers,
+            "plus_minus": stat.plus_minus,
+            
+            # Combo stats (pre-calculated or calculate on the fly)
+            "pra": stat.pra if hasattr(stat, 'pra') else (stat.points + stat.rebounds + stat.assists),
+            "pr": stat.pr if hasattr(stat, 'pr') else (stat.points + stat.rebounds),
+            "pa": stat.pa if hasattr(stat, 'pa') else (stat.points + stat.assists),
+            "ra": stat.ra if hasattr(stat, 'ra') else (stat.rebounds + stat.assists),
+            
+            # Also include with alternative name for compatibility
+            "three_pointers_made": stat.fg3m,
         })
-
-    return game_log
-
+    
+    return result
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _game_result(game: Game, team_id: int) -> str:
     if game.home_score is None or game.away_score is None:

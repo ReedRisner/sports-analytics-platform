@@ -27,6 +27,7 @@ export function StatsBreakdown({ projection, gameLog, statType }: StatsBreakdown
       case 'steals': return game.steals
       case 'blocks': return game.blocks
       case 'pra': return game.pra
+      case 'fg3m': return game.fg3m || game.three_pointers_made || 0
       default: return 0
     }
   }

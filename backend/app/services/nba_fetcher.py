@@ -326,7 +326,7 @@ def fetch_defensive_stats_by_position(season="2025-26"):
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
         # ── Compute per-team, per-bucket averages ───────────────────────────
-        grouped = df.groupby(['OPP_TEAM_ID', 'POS_BUCKET'])[['PTS', 'AST', 'REB', 'STL', 'BLK', 'FG3M']].mean().reset_index()
+        grouped = df.groupby(['OPP_TEAM_ID', 'POS_BUCKET'])[['PTS', 'AST', 'REB', 'STL', 'BLK', 'FG3M']].mean()
 
         # Build a dict: team_id → {bucket → {stat → avg}}
         team_avgs = {}

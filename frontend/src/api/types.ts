@@ -158,6 +158,11 @@ export interface GameLog {
   usage_rate?: number
   plus_minus?: number
   fantasy_pts: number
+  fg3m: number                      // 3-pointers made
+  three_pointers_made?: number      // Alternative name
+  pr: number                        // Points + Rebounds
+  pa: number                        // Points + Assists
+  ra: number   
 }
 
 /**

@@ -12,6 +12,8 @@ python -m app.services.odds_fetcher
 python -c "from app.services.projection_grader import grade_yesterdays_projections; from app.database import SessionLocal; grade_yesterdays_projections(SessionLocal())"
 
 python -c "from app.services.nba_fetcher import fetch_defensive_stats_by_position; fetch_defensive_stats_by_position()"
+
+python recalculate_defensive_stats.py
 ```
 ---
 

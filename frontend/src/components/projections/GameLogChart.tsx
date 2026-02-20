@@ -1,22 +1,41 @@
 import { useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend, Cell } from 'recharts'
-
+//this is projections one
 interface GameLog {
   game_id: number
   date: string
   opponent: string
-  points?: number
-  rebounds?: number
-  assists?: number
-  steals?: number
-  blocks?: number
-  minutes?: number
-  result?: string // 'W' or 'L'
+  opp_abbr: string
+  is_home: boolean
+  result: string
+  minutes: number
+  points: number
+  rebounds: number
+  assists: number
+  steals: number
+  blocks: number
+  fgm: number
+  fga: number
+  fg_pct: number
+  fg3m: number
+  fg3a: number
+  fg3_pct: number
+  ftm: number
+  fta: number
+  ft_pct: number
+  oreb: number
+  dreb: number
+  turnovers: number
+  plus_minus: number
+  pra: number
+  pr: number
+  pa: number
+  ra: number
+  three_pointers_made: number
 }
-
 interface GameLogChartProps {
   games: GameLog[]
-  statType: 'points' | 'rebounds' | 'assists' | 'steals' | 'blocks' | 'pra'
+  statType: 'points' | 'rebounds' | 'assists' | 'steals' | 'blocks' | 'pra' | 'pr' | 'pa' | 'ra' | 'three_pointers_made'
   line?: number
   filter: 'l5' | 'l10' | 'vs_opp'
   opponentAbbr?: string

@@ -113,11 +113,13 @@ class MatchupContext:
     ast_allowed:    Optional[float] = None
     stl_allowed:    Optional[float] = None
     blk_allowed:    Optional[float] = None
+    three_pointers_made_allowed: Optional[float] = None
     pts_rank:       Optional[int]   = None
     reb_rank:       Optional[int]   = None
     ast_rank:       Optional[int]   = None
     stl_rank:       Optional[int]   = None
     blk_rank:       Optional[int]   = None
+    three_pointers_made_rank: Optional[int] = None
 
 
 @dataclass
@@ -456,11 +458,13 @@ def get_matchup_context(
         ast_allowed    = _get("ast", "allowed"),
         stl_allowed    = _get("stl", "allowed"),
         blk_allowed    = _get("blk", "allowed"),
+        three_pointers_made_allowed = _get("three_pointers_made", "allowed"),
         pts_rank       = _get("pts", "rank"),
         reb_rank       = _get("reb", "rank"),
         ast_rank       = _get("ast", "rank"),
         stl_rank       = _get("stl", "rank"),
         blk_rank       = _get("blk", "rank"),
+        three_pointers_made_rank = _get("three_pointers_made", "rank"),
     )
 
 

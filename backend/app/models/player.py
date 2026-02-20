@@ -54,6 +54,12 @@ class Team(Base):
     blk_allowed_fc      = Column(Float)
     blk_allowed_c       = Column(Float)
 
+    three_pointers_made_allowed_g  = Column(Float)
+    three_pointers_made_allowed_gf = Column(Float)
+    three_pointers_made_allowed_f  = Column(Float)
+    three_pointers_made_allowed_fc = Column(Float)
+    three_pointers_made_allowed_c  = Column(Float)
+
     # ── League ranks (1 = most allowed = easiest matchup) ───────────────────
     pts_rank_g          = Column(Integer)
     pts_rank_gf         = Column(Integer)
@@ -84,6 +90,12 @@ class Team(Base):
     blk_rank_f          = Column(Integer)
     blk_rank_fc         = Column(Integer)
     blk_rank_c          = Column(Integer)
+
+    three_pointers_made_rank_g     = Column(Integer)
+    three_pointers_made_rank_gf    = Column(Integer)
+    three_pointers_made_rank_f     = Column(Integer)
+    three_pointers_made_rank_fc    = Column(Integer)
+    three_pointers_made_rank_c     = Column(Integer)
 
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
     players             = relationship("Player", back_populates="team")
