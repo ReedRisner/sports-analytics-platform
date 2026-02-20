@@ -185,6 +185,16 @@ def _find_status_for_player_and_team(
     return None
 
 
+def _filter_injuries_for_team(team_name: str, team_abbreviation: str, injuries: list) -> list:
+    """Return only injury feed rows that appear to belong to the provided team."""
+    if not injuries:
+        return []
+    return [
+        inj for inj in injuries
+        if isinstance(inj, dict) and _team_matches_injury_record(team_name, team_abbreviation, inj)
+    ]
+
+
 def _status_indicates_unavailable(status: Optional[str]) -> bool:
     """Return True when a feed status should count as an inactive player."""
     normalized = str(status or "").strip().lower()
@@ -281,18 +291,19 @@ def get_player_injury_status(
         return None
 
     injuries = fetch_todays_injuries(game_date)
+    team_injuries = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
 
     status = _find_status_for_player_and_team(
         player_name=player.name,
         team_name=team.name,
         team_abbreviation=team.abbreviation,
-        injuries=injuries,
+        injuries=team_injuries or injuries,
     )
     if not status:
         return None
 
     # Keep loose team check as a sanity filter when team field is present.
-    for inj in injuries:
+    for inj in (team_injuries or injuries):
         if not isinstance(inj, dict):
             continue
         if _name_similarity(player.name, inj.get("Player Name", "")) < 0.85:
@@ -384,11 +395,12 @@ def calculate_injury_impact_factor(
 
     # Use cached injury data
     injuries = fetch_todays_injuries(game_date)
+    team_injuries = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
 
     # Fallback: when external injury feed is unavailable/invalid, infer likely
     # absences from most recent completed team game so injury factor still works.
     inferred_out_ids = set()
-    if not injuries:
+    if not team_injuries:
         inferred_out_ids = _infer_recent_absent_teammates(
             db=db,
             team_id=player.team_id,
@@ -396,7 +408,7 @@ def calculate_injury_impact_factor(
         )
 
     # If no injury data and no inferred absences, return neutral.
-    if not injuries and not inferred_out_ids:
+    if not team_injuries and not inferred_out_ids:
         return 1.0
 
     # Keep raw injuries list; lookup handles first/last vs last,first formats.
@@ -435,7 +447,7 @@ def calculate_injury_impact_factor(
             player_name=teammate.name,
             team_name=team.name,
             team_abbreviation=team.abbreviation,
-            injuries=injuries,
+            injuries=team_injuries or injuries,
         )
         tm_context = team_context_map.get(teammate.id)
         if isinstance(tm_context, dict):
@@ -457,7 +469,9 @@ def calculate_injury_impact_factor(
 
         inferred_out = teammate.id in inferred_out_ids
 
-        is_core_rotation = (tm_minutes or 0) >= 20.0 and tm_usage >= 15.0
+        # Minutes-led inclusion: absences from steady rotation players should count
+        # even when usage isn't star-level.
+        is_core_rotation = (tm_minutes or 0) >= 18.0
 
         if _status_indicates_unavailable(status) and is_core_rotation:
             missing_weighted_usage += tm_weighted_usage
