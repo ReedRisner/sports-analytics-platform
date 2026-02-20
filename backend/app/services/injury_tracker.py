@@ -87,53 +87,57 @@ def _name_similarity(name1: str, name2: str) -> float:
 def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
     """
     Fetch NBA injury report for a specific date.
-    
-    Returns: List of injury records (empty if nbainjuries unavailable or report doesn't exist)
+
+    Tries multiple release windows because reports may publish at different times
+    (including midnight) and some snapshots can fail validation.
+
+    Returns: List of injury records (empty if unavailable)
     """
     if not INJURIES_AVAILABLE or injury is None:
         return []
-    
+
     if game_date is None:
         game_date = date.today()
-    
+
     # Check cache first
     cached = _get_cached_injuries(game_date)
     if cached is not None:
         return cached
-    
-    try:
-        # nbainjuries expects datetime, default to 5pm ET
-        report_time = datetime(
-            year=game_date.year,
-            month=game_date.month,
-            day=game_date.day,
-            hour=17,
-            minute=0
+
+    candidate_times = [
+        # User-observed early release
+        datetime(game_date.year, game_date.month, game_date.day, 0, 0),
+        # Midday update window
+        datetime(game_date.year, game_date.month, game_date.day, 12, 0),
+        # Traditional evening report window
+        datetime(game_date.year, game_date.month, game_date.day, 17, 0),
+        # Fallback to prior evening report if today's snapshots are unavailable
+        datetime.combine(game_date - timedelta(days=1), datetime.min.time()).replace(hour=17),
+    ]
+
+    last_error = None
+    for report_time in candidate_times:
+        try:
+            injury_data = injury.get_reportdata(report_time)
+            if injury_data:
+                _cache_injuries(game_date, injury_data)
+                logger.info(
+                    f"✓ Fetched {len(injury_data)} injury records for {game_date} "
+                    f"(snapshot {report_time:%Y-%m-%d %I:%M%p})"
+                )
+                return injury_data
+        except Exception as e:
+            last_error = e
+            continue
+
+    # Cache empty result to avoid repeated failing lookups for the same date.
+    _cache_injuries(game_date, [])
+    if last_error is not None:
+        logger.debug(
+            f"Injury report not available for {game_date}; "
+            f"tried midnight/noon/5pm snapshots ({str(last_error)[:80]})"
         )
-        
-        # Fetch as JSON (simpler than DataFrame)
-        injury_data = injury.get_reportdata(report_time)
-        
-        if not injury_data:
-            # Cache empty result to avoid repeated lookups
-            _cache_injuries(game_date, [])
-            return []
-        
-        # Cache successful result
-        _cache_injuries(game_date, injury_data)
-        logger.info(f"✓ Fetched {len(injury_data)} injury records for {game_date}")
-        return injury_data
-    
-    except Exception as e:
-        # Cache empty result on error (likely 403 - report doesn't exist yet)
-        # This prevents spamming the API with repeated failed requests
-        _cache_injuries(game_date, [])
-        
-        # Only log once per date to avoid spam
-        if str(game_date) not in _injury_cache or len(_injury_cache) < 2:
-            logger.debug(f"Injury report not available for {game_date}: {str(e)[:50]}")
-        
-        return []
+    return []
 
 
 def get_player_injury_status(
