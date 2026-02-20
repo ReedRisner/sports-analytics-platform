@@ -3,6 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { TrendingUp, TrendingDown, Target, DollarSign, BarChart3, Percent } from 'lucide-react'
 import { STAT_TYPES } from '@/lib/constants'
+import { useEdgeFinder } from '@/hooks/useEdgeFinder'
+import { BetCard } from '@/components/projections/BetCard'
+import type { Edge } from '@/api/types'
 
 interface AccuracyData {
   stat_type: string
@@ -104,6 +107,105 @@ export default function AccuracyPage() {
   const [statType, setStatType] = useState('points')
   const [daysBack, setDaysBack] = useState(30)
   const [minEdge, setMinEdge] = useState<number | null>(null)
+  const { data: edgesResponse } = useEdgeFinder(undefined, 'fanduel', 3.0, undefined)
+
+  const edges: Edge[] = Array.isArray(edgesResponse) ? edgesResponse : []
+  const eligibleEdges = edges.filter(isAllowedAccuracyStat)
+  const topEdgeBets = [...eligibleEdges]
+    .sort((a, b) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
+    .slice(0, 10)
+
+  const topStreakyBets = [...eligibleEdges]
+    .filter((edge) => edge.recommendation !== 'PASS' && getRecommendedSideStreak(edge) > 0)
+    .sort((a, b) => getRecommendedSideStreak(b) - getRecommendedSideStreak(a))
+    .slice(0, 10)
+
+  const noVigTopBets = [...eligibleEdges]
+    .filter((edge) => edge.recommendation !== 'PASS' && getRecommendedNoVigProbability(edge) > 0)
+    .sort((a, b) => getRecommendedNoVigProbability(b) - getRecommendedNoVigProbability(a))
+    .slice(0, 10)
+
+  const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+
+  const getResultColor = (result: string) => {
+    if (result === 'win') return 'text-green-400'
+    if (result === 'loss') return 'text-red-400'
+    return 'text-yellow-400'
+  }
+
+  const renderTrackedBets = (bets: TrackedBet[], showNoVig = false, showStreak = false) => (
+    <div className="overflow-x-auto rounded-xl border border-border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/40 text-muted-foreground">
+          <tr>
+            <th className="text-left p-3">Player</th>
+            <th className="text-left p-3">Bet</th>
+            <th className="text-left p-3">Edge</th>
+            <th className="text-left p-3">Proj / Line / Actual</th>
+            {showNoVig && <th className="text-left p-3">No-Vig Prob</th>}
+            {showStreak && <th className="text-left p-3">Streak</th>}
+            <th className="text-left p-3">Result</th>
+            <th className="text-left p-3">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bets.map((bet, index) => (
+            <tr key={`${bet.player_id}-${bet.stat_type}-${bet.game_date}-${index}`} className="border-t border-border">
+              <td className="p-3 font-medium">{bet.player_name} <span className="text-muted-foreground">({bet.team_abbr})</span></td>
+              <td className="p-3">{bet.recommendation} {bet.stat_type}</td>
+              <td className="p-3 font-mono">{bet.edge_pct > 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%</td>
+              <td className="p-3 font-mono">{bet.projected.toFixed(1)} / {bet.line?.toFixed(1) ?? '-'} / {bet.actual.toFixed(1)}</td>
+              {showNoVig && <td className="p-3">{bet.no_vig_prob ? `${(bet.no_vig_prob * 100).toFixed(1)}%` : '-'}</td>}
+              {showStreak && <td className="p-3">{bet.streak_count ? `${bet.streak_count}x ${bet.streak_type}` : '-'}</td>}
+              <td className={`p-3 font-semibold uppercase ${getResultColor(bet.bet_result)}`}>{bet.bet_result}</td>
+              <td className="p-3 text-muted-foreground">{bet.game_date}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+
+  const sectionLabel = daysBack === 1 ? 'Yesterday' : `Last ${daysBack} Days`
+
+  const getResultColor = (result: string) => {
+    if (result === 'win') return 'text-green-400'
+    if (result === 'loss') return 'text-red-400'
+    return 'text-yellow-400'
+  }
+
+  const renderTrackedBets = (bets: TrackedBet[], showNoVig = false, showStreak = false) => (
+    <div className="overflow-x-auto rounded-xl border border-border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/40 text-muted-foreground">
+          <tr>
+            <th className="text-left p-3">Player</th>
+            <th className="text-left p-3">Bet</th>
+            <th className="text-left p-3">Edge</th>
+            <th className="text-left p-3">Proj / Line / Actual</th>
+            {showNoVig && <th className="text-left p-3">No-Vig Prob</th>}
+            {showStreak && <th className="text-left p-3">Streak</th>}
+            <th className="text-left p-3">Result</th>
+            <th className="text-left p-3">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bets.map((bet, index) => (
+            <tr key={`${bet.player_id}-${bet.stat_type}-${bet.game_date}-${index}`} className="border-t border-border">
+              <td className="p-3 font-medium">{bet.player_name} <span className="text-muted-foreground">({bet.team_abbr})</span></td>
+              <td className="p-3">{bet.recommendation} {bet.stat_type}</td>
+              <td className="p-3 font-mono">{bet.edge_pct > 0 ? '+' : ''}{bet.edge_pct.toFixed(1)}%</td>
+              <td className="p-3 font-mono">{bet.projected.toFixed(1)} / {bet.line?.toFixed(1) ?? '-'} / {bet.actual.toFixed(1)}</td>
+              {showNoVig && <td className="p-3">{bet.no_vig_prob != null ? `${(bet.no_vig_prob * 100).toFixed(1)}%` : '-'}</td>}
+              {showStreak && <td className="p-3">{bet.streak_count ? `${bet.streak_count}x ${bet.streak_type}` : '-'}</td>}
+              <td className={`p-3 font-semibold uppercase ${getResultColor(bet.bet_result)}`}>{bet.bet_result}</td>
+              <td className="p-3 text-muted-foreground">{bet.game_date}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 
   const sectionLabel = getSectionLabel(daysBack)
 
