@@ -3,6 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { TrendingUp, TrendingDown, Target, DollarSign, BarChart3, Percent } from 'lucide-react'
 import { STAT_TYPES } from '@/lib/constants'
+import { useEdgeFinder } from '@/hooks/useEdgeFinder'
+import { BetCard } from '@/components/projections/BetCard'
+import type { Edge } from '@/api/types'
 
 interface AccuracyData {
   stat_type: string
@@ -33,10 +36,51 @@ interface AccuracyData {
   }
 }
 
+const isAllowedAccuracyStat = (edge: Edge) => (
+  edge.stat_type !== 'steals' && edge.stat_type !== 'blocks'
+)
+
+const getRecommendedNoVigProbability = (edge: Edge): number => {
+  if (edge.recommendation === 'OVER') return edge.no_vig_fair_over ?? 0
+  if (edge.recommendation === 'UNDER') return edge.no_vig_fair_under ?? 0
+  return 0
+}
+
+const getRecommendedSideStreak = (edge: Edge): number => {
+  if (!edge.streak) return 0
+
+  if (edge.recommendation === 'OVER') {
+    return edge.streak.streak_type === 'hit' ? edge.streak.current_streak : 0
+  }
+
+  if (edge.recommendation === 'UNDER') {
+    return edge.streak.streak_type === 'miss' ? edge.streak.current_streak : 0
+  }
+
+  return 0
+}
+
 export default function AccuracyPage() {
   const [statType, setStatType] = useState('points')
   const [daysBack, setDaysBack] = useState(30)
   const [minEdge, setMinEdge] = useState<number | null>(null)
+  const { data: edgesResponse } = useEdgeFinder(undefined, 'fanduel', 3.0, undefined)
+
+  const edges: Edge[] = Array.isArray(edgesResponse) ? edgesResponse : []
+  const eligibleEdges = edges.filter(isAllowedAccuracyStat)
+  const topEdgeBets = [...eligibleEdges]
+    .sort((a, b) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
+    .slice(0, 10)
+
+  const topStreakyBets = [...eligibleEdges]
+    .filter((edge) => edge.recommendation !== 'PASS' && getRecommendedSideStreak(edge) > 0)
+    .sort((a, b) => getRecommendedSideStreak(b) - getRecommendedSideStreak(a))
+    .slice(0, 10)
+
+  const noVigTopBets = [...eligibleEdges]
+    .filter((edge) => edge.recommendation !== 'PASS' && getRecommendedNoVigProbability(edge) > 0)
+    .sort((a, b) => getRecommendedNoVigProbability(b) - getRecommendedNoVigProbability(a))
+    .slice(0, 10)
 
   // Fetch accuracy data
   const { data: accuracy, isLoading, error } = useQuery<AccuracyData>({
@@ -368,6 +412,52 @@ export default function AccuracyPage() {
               </ul>
             </div>
           </div>
+
+          {/* Today's Best Bet Tracking */}
+          <section className="space-y-4">
+            <h2 className="text-2xl font-bold tracking-tight">Today&apos;s Best 10 Edge Bets</h2>
+            {topEdgeBets.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+                {topEdgeBets.map((edge, index) => (
+                  <BetCard key={`accuracy-top-edge-${edge.player_id}-${edge.stat_type}-${index}`} edge={edge} rank={index + 1} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
+                No edge bets found today.
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-2xl font-bold tracking-tight">Top 10 Streaky Bets</h2>
+            {topStreakyBets.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+                {topStreakyBets.map((edge, index) => (
+                  <BetCard key={`accuracy-streak-${edge.player_id}-${edge.stat_type}-${index}`} edge={edge} rank={index + 1} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
+                No streak-based bets found today.
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-2xl font-bold tracking-tight">Today&apos;s No-Vig Odds Bets (Top 10)</h2>
+            {noVigTopBets.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+                {noVigTopBets.map((edge, index) => (
+                  <BetCard key={`accuracy-no-vig-${edge.player_id}-${edge.stat_type}-${index}`} edge={edge} rank={index + 1} />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border bg-card/50 p-6 text-sm text-muted-foreground">
+                No no-vig bet opportunities found today.
+              </div>
+            )}
+          </section>
         </>
       )}
     </div>

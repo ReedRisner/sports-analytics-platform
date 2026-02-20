@@ -15,6 +15,19 @@ from app.services.schema_compat import ensure_projection_history_schema
 logger = logging.getLogger(__name__)
 
 
+def _normalize_accuracy_stat_type(stat_type: str) -> str:
+    """Normalize frontend/backfill aliases to canonical stat keys."""
+    normalized = (stat_type or '').strip().lower()
+    alias_map = {
+        '3pm': 'threes',
+        '3pt': 'threes',
+        '3ptm': 'threes',
+        'three_pointers_made': 'threes',
+        'r+a': 'ra',
+    }
+    return alias_map.get(normalized, normalized)
+
+
 def grade_yesterdays_projections(db: Session, target_date: Optional[date] = None):
     """
     Compare yesterday's projections to actual game results.
@@ -123,19 +136,22 @@ def grade_yesterdays_projections(db: Session, target_date: Optional[date] = None
 
 def _get_actual_stat(stat: 'PlayerGameStats', stat_type: str) -> Optional[float]:
     """Extract actual stat value from game stats row."""
+    normalized_stat_type = _normalize_accuracy_stat_type(stat_type)
+
     stat_map = {
         'points': 'points',
         'rebounds': 'rebounds',
         'assists': 'assists',
         'steals': 'steals',
         'blocks': 'blocks',
+        'threes': 'fg3m',
         'pra': 'pra',
         'pr': 'pr',
         'pa': 'pa',
         'ra': 'ra',
     }
     
-    col_name = stat_map.get(stat_type)
+    col_name = stat_map.get(normalized_stat_type)
     if col_name:
         return getattr(stat, col_name, None)
     return None
@@ -155,12 +171,13 @@ def calculate_model_accuracy(
     from app.models.projections import ProjectionResult
     from app.models.player import Game
     
+    normalized_stat_type = _normalize_accuracy_stat_type(stat_type)
     cutoff_date = date.today() - timedelta(days=days_back)
     
     query = db.query(ProjectionResult).join(
         Game, ProjectionResult.game_id == Game.id
     ).filter(
-        ProjectionResult.stat_type == stat_type,
+        ProjectionResult.stat_type == normalized_stat_type,
         Game.date >= cutoff_date,
         ProjectionResult.bet_result != None,
     )
@@ -174,7 +191,7 @@ def calculate_model_accuracy(
     
     if not results:
         return {
-            'stat_type': stat_type,
+            'stat_type': normalized_stat_type,
             'days_back': days_back,
             'sample_size': 0,
             'message': 'No graded projections found',
@@ -239,7 +256,7 @@ def calculate_model_accuracy(
         under_win_rate = (under_wins / under_total * 100) if under_total else 0
     
     return {
-        'stat_type': stat_type,
+        'stat_type': normalized_stat_type,
         'days_back': days_back,
         'min_edge_filter': min_edge,
         'sample_size': total,
