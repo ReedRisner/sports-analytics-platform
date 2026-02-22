@@ -1,11 +1,10 @@
 import { Projection } from '@/api/types'
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { STAT_TYPES } from '@/lib/constants'
 
 interface ProjectionCardProps {
   projection?: Projection
-  odds?: any
+  odds?: { line: number; over_odds: number; under_odds: number }
   statType: string
 }
 
@@ -26,6 +25,9 @@ export function ProjectionCard({ projection, odds, statType }: ProjectionCardPro
 
   const isOver = projection.recommendation === 'OVER'
   const isPass = projection.recommendation === 'PASS'
+  const edgePct = projection.edge_pct ?? 0
+  const overProb = projection.over_prob ?? 0
+  const underProb = projection.under_prob ?? 0
   
   return (
     <div className="rounded-xl border border-border bg-card p-6 space-y-6">
@@ -90,7 +92,7 @@ export function ProjectionCard({ projection, odds, statType }: ProjectionCardPro
                   !isPass && !isOver && 'text-red-400'
                 )}
               >
-                {projection.edge_pct > 0 ? '+' : ''}{projection.edge_pct.toFixed(1)}%
+                {edgePct > 0 ? '+' : ''}{edgePct.toFixed(1)}%
               </div>
             </div>
           </div>
@@ -100,8 +102,8 @@ export function ProjectionCard({ projection, odds, statType }: ProjectionCardPro
             <span className="text-muted-foreground">Win Probability</span>
             <span className="font-mono font-semibold">
               {isOver 
-                ? `${(projection.over_prob * 100).toFixed(1)}%`
-                : `${(projection.under_prob * 100).toFixed(1)}%`
+                ? `${(overProb * 100).toFixed(1)}%`
+                : `${(underProb * 100).toFixed(1)}%`
               }
             </span>
           </div>
