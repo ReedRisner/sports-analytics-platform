@@ -73,7 +73,7 @@ def safe_int(val, default=0):
     except (ValueError, TypeError):
         return default
 
-def nba_get(url, params, timeout=120):
+def nba_get(url, params, timeout=160):
     resp = SESSION.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
