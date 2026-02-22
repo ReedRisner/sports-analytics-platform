@@ -236,7 +236,7 @@ export default function Dashboard() {
     .sort((a, b) => getRecommendedNoVigProbability(b) - getRecommendedNoVigProbability(a))
     .slice(0, 10)
 
-  const topAccurateMarkets = useMemo(() => (historicalAccuracy ?? []).slice(0, 3), [historicalAccuracy])
+  
 
   const totalBetsFound = eligibleEdges.length
 
