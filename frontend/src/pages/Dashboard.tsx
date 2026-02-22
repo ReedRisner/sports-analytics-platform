@@ -114,7 +114,7 @@ export default function Dashboard() {
     undefined
   )
 
-  const { data: mostAccurateByStrategy, isLoading: isAccuracyLoading } = useQuery({
+  const { data: historicalAccuracy, isLoading: isAccuracyLoading } = useQuery({
     queryKey: ['dashboard-accuracy-summary', selectedWindow],
     queryFn: async (): Promise<AccuracySummaryByStrategy> => {
       const responses = await Promise.all(
@@ -191,12 +191,12 @@ export default function Dashboard() {
 
   const strategyCards = useMemo(
     () => [
-      { key: 'general', title: 'Most Accurate (General)', data: mostAccurateByStrategy?.general },
-      { key: 'edge', title: 'Most Accurate (Edge)', data: mostAccurateByStrategy?.edge },
-      { key: 'streak', title: 'Most Accurate (Streak)', data: mostAccurateByStrategy?.streak },
-      { key: 'noVig', title: 'Most Accurate (No-Vig)', data: mostAccurateByStrategy?.noVig },
+      { key: 'general', title: 'Most Accurate (General)', data: historicalAccuracy?.general },
+      { key: 'edge', title: 'Most Accurate (Edge)', data: historicalAccuracy?.edge },
+      { key: 'streak', title: 'Most Accurate (Streak)', data: historicalAccuracy?.streak },
+      { key: 'noVig', title: 'Most Accurate (No-Vig)', data: historicalAccuracy?.noVig },
     ],
-    [mostAccurateByStrategy]
+    [historicalAccuracy]
   )
 
   const edges: Edge[] = Array.isArray(edgesResponse)
