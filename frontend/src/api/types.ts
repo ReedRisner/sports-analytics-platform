@@ -39,6 +39,12 @@ export interface Projection {
   team_abbr?: string
   position: string
   stat_type: string
+  player_injury_status?: string | null
+  team_injuries?: Array<{ player_name: string; status: string }>
+  minutes_context?: {
+    projected_minutes?: number | null
+    actual_mpg?: number | null
+  }
   projected: number
   season_avg: number
   l5_avg: number
