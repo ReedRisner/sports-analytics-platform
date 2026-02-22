@@ -8,12 +8,14 @@ import { TrendingUp, TrendingDown } from 'lucide-react'
 interface EdgesTableProps {
   edges: Edge[]
   isLoading?: boolean
+  emptyTitle?: string
+  emptyDescription?: string
 }
 
 /**
  * Table displaying edges with sorting and click-to-view
  */
-export function EdgesTable({ edges, isLoading }: EdgesTableProps) {
+export function EdgesTable({ edges, isLoading, emptyTitle = 'No edges found', emptyDescription = 'Try adjusting your filters or check back later' }: EdgesTableProps) {
   const navigate = useNavigate()
 
   if (isLoading) {
@@ -27,9 +29,9 @@ export function EdgesTable({ edges, isLoading }: EdgesTableProps) {
   if (edges.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-12 text-center">
-        <div className="text-muted-foreground">No edges found</div>
+        <div className="text-muted-foreground">{emptyTitle}</div>
         <p className="text-sm text-muted-foreground mt-2">
-          Try adjusting your filters or check back later
+          {emptyDescription}
         </p>
       </div>
     )

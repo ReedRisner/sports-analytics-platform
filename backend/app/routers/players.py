@@ -12,6 +12,7 @@ from app.services.projection_engine import (
     compute_stat_averages,
     STAT_CONFIG,
 )
+from app.services.injury_tracker import fetch_todays_injuries, get_player_injury_status
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -22,6 +23,10 @@ def _safe(val, default=0.0):
         return float(val) if val is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _avg(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
 
 
 def _projection_to_dict(proj) -> dict:
@@ -229,12 +234,92 @@ def player_projection(
     if not proj:
         raise HTTPException(status_code=404, detail="Player not found or no stats available")
 
+    player = db.query(Player).filter(Player.id == player_id).first()
+    team = db.query(Team).filter(Team.id == player.team_id).first() if player else None
+
+    # Minutes context for UI: compare projected workload to true season MPG.
+    minute_samples = (
+        db.query(PlayerGameStats.minutes)
+        .join(Game, PlayerGameStats.game_id == Game.id)
+        .filter(PlayerGameStats.player_id == player_id)
+        .order_by(desc(Game.date))
+        .limit(15)
+        .all()
+    )
+    minute_values = [float(row[0]) for row in minute_samples if row[0] is not None]
+    actual_mpg = round(sum(minute_values) / len(minute_values), 1) if minute_values else None
+
+    l5_minutes = minute_values[:5]
+    l10_minutes = minute_values[:10]
+    baseline_minutes = (
+        (_avg(l5_minutes) * 0.6) + (_avg(l10_minutes) * 0.4)
+        if minute_values
+        else None
+    )
+    projected_minutes = (
+        round(
+            max(
+                8.0,
+                min(
+                    46.0,
+                    baseline_minutes
+                    * (proj.rest_factor or 1.0)
+                    * (proj.blowout_factor or 1.0),
+                ),
+            ),
+            1,
+        )
+        if baseline_minutes is not None
+        else None
+    )
+
+    player_injury_status = get_player_injury_status(db, player_id)
+    team_injuries = []
+    if team:
+        injuries = fetch_todays_injuries()
+        team_name_l = (team.name or "").lower()
+        team_abbr_u = (team.abbreviation or "").upper()
+        current_player_name = (proj.player_name or "").lower()
+
+        for inj in injuries:
+            if not isinstance(inj, dict):
+                continue
+
+            team_field = str(inj.get("Team", "") or "")
+            if not team_field:
+                continue
+
+            team_field_l = team_field.lower()
+            team_field_u = team_field.upper()
+            if team_name_l not in team_field_l and team_abbr_u not in team_field_u:
+                continue
+
+            player_name = str(inj.get("Player Name") or "").strip()
+            status = str(inj.get("Current Status") or "").strip()
+            if not player_name or not status:
+                continue
+
+            # Return teammate injuries (exclude the selected player).
+            if player_name.lower() == current_player_name:
+                continue
+
+            team_injuries.append({"player_name": player_name, "status": status})
+
+        # Keep response compact and deterministic.
+        team_injuries = sorted(team_injuries, key=lambda item: item["player_name"])[:8]
+
     return {
         "player_id":    proj.player_id,
         "player_name":  proj.player_name,
         "team_name":    proj.team_name,
         "position":     proj.position,
         "stat_type":    proj.stat_type,
+        "player_injury_status": player_injury_status,
+        "team_injuries": team_injuries,
+        "minutes_context": {
+            "projected_minutes": projected_minutes,
+            "actual_mpg": actual_mpg,
+        },
         **_projection_to_dict(proj),
     }
 
