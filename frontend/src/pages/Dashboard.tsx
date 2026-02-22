@@ -1,11 +1,55 @@
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import { BetCard } from '@/components/projections/BetCard'
-import { TrendingUp } from 'lucide-react'
+import { TrendingUp, Target } from 'lucide-react'
 import type { Edge } from '@/api/types'
+import { apiClient } from '@/api/client'
 
 const isAllowedDashboardStat = (edge: Edge) => (
   edge.stat_type !== 'steals' && edge.stat_type !== 'blocks'
 )
+
+const ACCURACY_STATS = ['points', 'rebounds', 'assists', 'pra'] as const
+
+const TIME_WINDOWS = [
+  { label: 'Yesterday', daysBack: 1 },
+  { label: 'This Week', daysBack: 7 },
+  { label: 'This Month', daysBack: 30 },
+] as const
+
+type BetResult = 'win' | 'loss' | 'push' | string
+
+type TrackedBet = {
+  bet_result: BetResult
+}
+
+type AccuracyApiResponse = {
+  sample_size: number
+  overall?: {
+    win_rate?: number
+    roi?: number
+  }
+  top_edge_bets?: TrackedBet[]
+  top_streaky_bets?: TrackedBet[]
+  top_no_vig_bets?: TrackedBet[]
+}
+
+type StrategySummary = {
+  market: string
+  strategy: string
+  winRate: number
+  roi: number
+  sampleSize: number
+}
+
+type AccuracySummaryByStrategy = {
+  general: StrategySummary | null
+  edge: StrategySummary | null
+  streak: StrategySummary | null
+  noVig: StrategySummary | null
+}
 
 const getRecommendedNoVigProbability = (edge: Edge): number => {
   if (edge.recommendation === 'OVER') return edge.no_vig_fair_over ?? 0
@@ -27,15 +71,132 @@ const getRecommendedSideStreak = (edge: Edge): number => {
   return 0
 }
 
+const summarizeTrackedBets = (bets: TrackedBet[] = []) => {
+  const wins = bets.filter((bet) => bet.bet_result === 'win').length
+  const losses = bets.filter((bet) => bet.bet_result === 'loss').length
+  const decisions = wins + losses
+
+  if (decisions === 0) {
+    return { winRate: 0, roi: 0, sampleSize: 0 }
+  }
+
+  // Approximate ROI using -110 pricing and 1u sizing.
+  const profitUnits = (wins * 0.9091) - losses
+  return {
+    winRate: Number(((wins / decisions) * 100).toFixed(1)),
+    roi: Number(((profitUnits / decisions) * 100).toFixed(1)),
+    sampleSize: decisions,
+  }
+}
+
+const selectBest = (items: StrategySummary[]): StrategySummary | null => {
+  if (!items.length) return null
+
+  const ranked = [...items].sort((a, b) => {
+    const scoreA = (a.winRate * Math.log10(a.sampleSize + 1)) + (a.roi * 0.4)
+    const scoreB = (b.winRate * Math.log10(b.sampleSize + 1)) + (b.roi * 0.4)
+    return scoreB - scoreA
+  })
+
+  return ranked[0]
+}
+
 /**
  * Dashboard - Best Bets of the Day
  */
 export default function Dashboard() {
+  const [selectedWindow, setSelectedWindow] = useState<number>(30)
+
   const { data: edgesResponse, isLoading, error } = useEdgeFinder(
     undefined,
     'fanduel',
     3.0,
     undefined
+  )
+
+  const { data: historicalAccuracy, isLoading: isAccuracyLoading } = useQuery({
+    queryKey: ['dashboard-accuracy-summary', selectedWindow],
+    queryFn: async (): Promise<AccuracySummaryByStrategy> => {
+      const responses = await Promise.all(
+        ACCURACY_STATS.map(async (statType) => {
+          const { data } = await apiClient.get<AccuracyApiResponse>('/projections/accuracy', {
+            params: { stat_type: statType, days_back: selectedWindow }
+          })
+
+          return {
+            statType,
+            overall: data?.overall,
+            sampleSize: data?.sample_size ?? 0,
+            topEdgeBets: data?.top_edge_bets ?? [],
+            topStreakyBets: data?.top_streaky_bets ?? [],
+            topNoVigBets: data?.top_no_vig_bets ?? [],
+          }
+        })
+      )
+
+      const generalCandidates: StrategySummary[] = []
+      const edgeCandidates: StrategySummary[] = []
+      const streakCandidates: StrategySummary[] = []
+      const noVigCandidates: StrategySummary[] = []
+
+      responses.forEach((item) => {
+        const sampleSize = item.sampleSize
+        if (sampleSize >= 20) {
+          generalCandidates.push({
+            market: item.statType,
+            strategy: 'General model',
+            winRate: item.overall?.win_rate ?? 0,
+            roi: item.overall?.roi ?? 0,
+            sampleSize,
+          })
+        }
+
+        const edgeSummary = summarizeTrackedBets(item.topEdgeBets)
+        if (edgeSummary.sampleSize >= 10) {
+          edgeCandidates.push({
+            market: item.statType,
+            strategy: 'Top Edge picks',
+            ...edgeSummary,
+          })
+        }
+
+        const streakSummary = summarizeTrackedBets(item.topStreakyBets)
+        if (streakSummary.sampleSize >= 10) {
+          streakCandidates.push({
+            market: item.statType,
+            strategy: 'Streak picks',
+            ...streakSummary,
+          })
+        }
+
+        const noVigSummary = summarizeTrackedBets(item.topNoVigBets)
+        if (noVigSummary.sampleSize >= 10) {
+          noVigCandidates.push({
+            market: item.statType,
+            strategy: 'No-Vig picks',
+            ...noVigSummary,
+          })
+        }
+      })
+
+      return {
+        general: selectBest(generalCandidates),
+        edge: selectBest(edgeCandidates),
+        streak: selectBest(streakCandidates),
+        noVig: selectBest(noVigCandidates),
+      }
+    },
+    staleTime: 1000 * 60 * 10,
+  })
+
+  const strategyCards = useMemo(
+    () => [
+      { key: 'general', title: 'Most Accurate (General)', data: historicalAccuracy?.general },
+      { key: 'edge', title: 'Most Accurate (Edge)', data: historicalAccuracy?.edge },
+      { key: 'streak', title: 'Most Accurate (Streak)', data: historicalAccuracy?.streak },
+      { key: 'noVig', title: 'Most Accurate (No-Vig)', data: historicalAccuracy?.noVig },
+    ],
+    [historicalAccuracy]
   )
 
   const edges: Edge[] = Array.isArray(edgesResponse)
@@ -114,6 +275,60 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-2xl font-bold tracking-tight">Most Accurate Markets by Strategy</h2>
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-1">
+            {TIME_WINDOWS.map((window) => (
+              <button
+                key={window.daysBack}
+                type="button"
+                onClick={() => setSelectedWindow(window.daysBack)}
+                className={`rounded-md px-3 py-1.5 text-sm transition-colors ${selectedWindow === window.daysBack
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+                  }`}
+              >
+                {window.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Split by strategy: General model accuracy vs Top Edge picks vs Streak picks vs No-Vig picks.
+          </p>
+          <Link to="/accuracy" className="text-sm text-primary hover:underline">View full accuracy report</Link>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          {strategyCards.map((card) => (
+            <div key={card.key} className="rounded-xl border border-border bg-card p-5 min-h-[150px]">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm tracking-wider text-muted-foreground">{card.title}</div>
+                <Target className="w-4 h-4 text-primary" />
+              </div>
+
+              {isAccuracyLoading ? (
+                <div className="text-sm text-muted-foreground">Loading…</div>
+              ) : card.data ? (
+                <>
+                  <div className="text-lg font-semibold uppercase">{card.data.market}</div>
+                  <div className="text-2xl font-bold text-green-400 mt-1">{card.data.winRate.toFixed(1)}%</div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    {card.data.strategy} • ROI {card.data.roi >= 0 ? '+' : ''}{card.data.roi.toFixed(1)}%
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1">{card.data.sampleSize} graded bets</div>
+                </>
+              ) : (
+                <div className="text-sm text-muted-foreground">Not enough graded bets in this window.</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
 
       {isLoading && (
         <div className="flex items-center justify-center py-20">

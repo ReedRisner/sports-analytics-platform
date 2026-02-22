@@ -1,7 +1,7 @@
 # backend/app/routers/players.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import desc
 from typing import Optional
 
 from app.database import get_db
@@ -12,7 +12,7 @@ from app.services.projection_engine import (
     compute_stat_averages,
     STAT_CONFIG,
 )
-from app.services.injury_tracker import fetch_todays_injuries, get_player_injury_status
+from app.services.injury_tracker import get_player_injury_status, get_team_injuries_with_fallback
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -276,52 +276,12 @@ def player_projection(
     player_injury_status = get_player_injury_status(db, player_id)
     team_injuries = []
     if team:
-        injuries = fetch_todays_injuries()
-        team_name_l = (team.name or "").lower()
-        team_abbr_u = (team.abbreviation or "").upper()
-        current_player_name = (proj.player_name or "").lower()
-
-        for inj in injuries:
-            if not isinstance(inj, dict):
-                continue
-
-            team_field = str(inj.get("Team", "") or "")
-            if not team_field:
-                continue
-
-            team_field_l = team_field.lower()
-            team_field_u = team_field.upper()
-            if team_name_l not in team_field_l and team_abbr_u not in team_field_u:
-                continue
-
-            player_name = str(inj.get("Player Name") or "").strip()
-            status = str(inj.get("Current Status") or "").strip()
-            if not player_name or not status:
-                continue
-
-            # Return teammate injuries (exclude the selected player).
-            if player_name.lower() == current_player_name:
-                continue
-
-            teammate = db.query(Player).filter(func.lower(Player.name) == player_name.lower()).first()
-            teammate_mpg = None
-            if teammate:
-                teammate_minutes = (
-                    db.query(PlayerGameStats.minutes)
-                    .join(Game, PlayerGameStats.game_id == Game.id)
-                    .filter(PlayerGameStats.player_id == teammate.id, PlayerGameStats.minutes != None)
-                    .order_by(desc(Game.date))
-                    .limit(20)
-                    .all()
-                )
-                minute_values = [float(row[0]) for row in teammate_minutes if row[0] is not None]
-                if minute_values:
-                    teammate_mpg = round(sum(minute_values) / len(minute_values), 1)
-
-            team_injuries.append({"player_name": player_name, "status": status, "mpg": teammate_mpg})
-
-        # Keep response compact and deterministic.
-        team_injuries = sorted(team_injuries, key=lambda item: item["player_name"])[:8]
+        current_player_name = (proj.player_name or "").strip().lower()
+        injuries = get_team_injuries_with_fallback(db, team.id)
+        team_injuries = [
+            injury for injury in injuries
+            if str(injury.get("player_name", "")).strip().lower() != current_player_name
+        ]
 
     return {
         "player_id":    proj.player_id,
@@ -393,7 +353,7 @@ def get_player_game_log(
     Returns games in reverse chronological order (most recent first).
     """
     from app.models.player import PlayerGameStats, Game
-    from sqlalchemy import desc, func
+    from sqlalchemy import desc
     
     # Fetch recent games
     game_stats = (

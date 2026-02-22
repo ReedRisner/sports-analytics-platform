@@ -267,6 +267,112 @@ def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
     return []
 
 
+def get_team_injuries_with_fallback(
+    db: Session,
+    team_id: int,
+    game_date: Optional[date] = None,
+    limit: int = 8,
+) -> list[dict]:
+    """
+    Return team injury report for UI with a practical fallback when feed data is missing.
+
+    Primary source: external injury feed filtered to team rows.
+    Fallback source: inferred likely absences from last completed team game.
+    """
+    from app.models.player import Player, Team, PlayerGameStats, Game
+
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        return []
+
+    target_date = game_date or date.today()
+    injuries = fetch_todays_injuries(target_date)
+    team_injuries = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
+
+    entries: list[dict] = []
+    seen_names: set[str] = set()
+
+    if team_injuries:
+        for inj in team_injuries:
+            if not isinstance(inj, dict):
+                continue
+            player_name = str(inj.get("Player Name") or "").strip()
+            status = str(inj.get("Current Status") or "").strip()
+            if not player_name or not status:
+                continue
+
+            dedupe_key = _normalize_name(player_name)
+            if dedupe_key in seen_names:
+                continue
+            seen_names.add(dedupe_key)
+
+            entries.append({
+                "player_name": player_name,
+                "status": status,
+                "source": "official",
+            })
+
+    if not entries:
+        inferred_out_ids = _infer_recent_absent_teammates(db=db, team_id=team_id, game_date=target_date)
+        if inferred_out_ids:
+            inferred_players = (
+                db.query(Player)
+                .filter(Player.id.in_(inferred_out_ids), Player.team_id == team_id)
+                .all()
+            )
+            for teammate in inferred_players:
+                entries.append({
+                    "player_name": teammate.name,
+                    "status": "Likely Out (missed last team game)",
+                    "source": "inferred",
+                })
+
+    if not entries:
+        return []
+
+    teammate_names = [entry["player_name"] for entry in entries]
+    mpg_map = {}
+    if teammate_names:
+        teammates = (
+            db.query(Player)
+            .filter(Player.team_id == team_id, Player.name.in_(teammate_names))
+            .all()
+        )
+        teammate_ids = [tm.id for tm in teammates]
+
+        if teammate_ids:
+            minute_rows = (
+                db.query(PlayerGameStats.player_id, PlayerGameStats.minutes)
+                .join(Game, PlayerGameStats.game_id == Game.id)
+                .filter(PlayerGameStats.player_id.in_(teammate_ids), PlayerGameStats.minutes.isnot(None))
+                .order_by(desc(Game.date))
+                .all()
+            )
+
+            # Track up to 20 recent minute entries per player for fair MPG context.
+            per_player_minutes = {}
+            for pid, minutes in minute_rows:
+                bucket = per_player_minutes.setdefault(pid, [])
+                if len(bucket) < 20:
+                    bucket.append(float(minutes))
+
+            for teammate in teammates:
+                vals = per_player_minutes.get(teammate.id, [])
+                mpg_map[teammate.name.lower()] = round(sum(vals) / len(vals), 1) if vals else None
+
+    cleaned = []
+    for entry in entries:
+        player_name = entry["player_name"]
+        cleaned.append({
+            "player_name": player_name,
+            "status": entry["status"],
+            "mpg": mpg_map.get(player_name.lower()),
+        })
+
+    cleaned.sort(key=lambda item: item["player_name"])
+    return cleaned[:limit]
+
+
 def get_player_injury_status(
     db: Session,
     player_id: int,
