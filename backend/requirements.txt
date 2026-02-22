@@ -31,7 +31,6 @@ nbainjuries==1.1.1
 numpy==1.26.4
 packaging==26.0
 pandas==2.3.3
-passlib==1.7.4
 propcache==0.4.1
 psycopg2-binary==2.9.9
 pyasn1==0.6.2
@@ -42,8 +41,6 @@ pydantic_core==2.41.5
 PyPDF2==3.0.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
-python-jose==3.3.0
-python-multipart==0.0.6
 pytz==2025.2
 PyYAML==6.0.3
 requests==2.32.5
@@ -68,4 +65,5 @@ python-jose[cryptography]==3.3.0
 python-multipart==0.0.6
 passlib[bcrypt]==1.7.4
 sendgrid==6.11.0
+
 
