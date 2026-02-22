@@ -32,7 +32,7 @@ export const projectionsAPI = {
     // Backend expects POST with query parameters, not body
     const { data } = await apiClient.post('/projections/simulate', null, {
       params, // Query parameters
-      timeout: 60000, // 60 second timeout for Monte Carlo
+      timeout: 120000, // 60 second timeout for Monte Carlo
     })
     return data
   },

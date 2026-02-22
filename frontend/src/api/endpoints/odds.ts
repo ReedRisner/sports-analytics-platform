@@ -21,7 +21,7 @@ export const oddsAPI = {
         min_edge_pct: minEdgePct,
         position,
       },
-      timeout: 60000, // 60 second timeout for edge finder
+      timeout: 120000, // 60 second timeout for edge finder
     })
     // Backend returns { edges: [...] }, extract the array
     return Array.isArray(data) ? data : data.edges || []
