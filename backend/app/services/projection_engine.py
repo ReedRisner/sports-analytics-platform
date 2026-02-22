@@ -33,6 +33,7 @@ LEAGUE_AVG_PACE = 100.0
 W_L5     = 0.50
 W_L10    = 0.30
 W_SEASON = 0.20
+W_L3     = 0.15
 
 STD_WINDOW = 10
 
@@ -176,6 +177,48 @@ def _std_dev(values: list[float]) -> float:
     mean = _avg(values)
     variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
     return math.sqrt(variance)
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _weighted_baseline(values: list[float]) -> float:
+    """
+    Compute a more stable baseline projection.
+
+    Enhancements vs static weights:
+    - Adds L3 to better react to role changes.
+    - Dynamically shifts weight toward season average for small samples.
+    - Adds a mild volatility penalty so boom/bust players are regressed.
+    """
+    if not values:
+        return 0.0
+
+    season_avg = _avg(values)
+    l3_avg = _avg(values[:3])
+    l5_avg = _avg(values[:5])
+    l10_avg = _avg(values[:10])
+
+    # Increase regression to season average when sample is thin.
+    sample_factor = _clamp(len(values) / 20.0, 0.35, 1.0)
+    recency_factor = _clamp(sample_factor + 0.1, 0.45, 1.0)
+
+    base = (
+        (l3_avg * W_L3 * recency_factor) +
+        (l5_avg * W_L5 * recency_factor) +
+        (l10_avg * W_L10 * recency_factor) +
+        (season_avg * W_SEASON)
+    )
+
+    # Re-normalize to avoid shrink/expand from dynamic factors.
+    total_weight = (W_L3 + W_L5 + W_L10) * recency_factor + W_SEASON
+    base = base / total_weight if total_weight else season_avg
+
+    # Volatility-aware smoothing: regress volatile profiles toward season.
+    cv = (_std_dev(values[:10]) / season_avg) if season_avg > 0 else 0
+    volatility_penalty = _clamp(1.0 - (cv * 0.10), 0.92, 1.02)
+    return ((base * volatility_penalty) + season_avg) / 2.0
 
 
 def _normal_cdf(z: float) -> float:
@@ -509,11 +552,7 @@ def project_player(
 
     avgs = compute_stat_averages(values)
 
-    base = (
-        avgs.l5_avg     * W_L5 +
-        avgs.l10_avg    * W_L10 +
-        avgs.season_avg * W_SEASON
-    )
+    base = _weighted_baseline(values)
 
     matchup  = None
     adjusted = base
