@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
 SPORT           = "basketball_nba"
-REGIONS         = "us"         # us = FanDuel, DraftKings, BetMGM, etc.
+BOOKMAKERS      = "fanduel"
 ODDS_FORMAT     = "american"
 
 # Markets to pull — each adds ~1 credit per event
@@ -70,10 +70,7 @@ MARKET_TO_STAT = {
 }
 
 # Sportsbooks we care about
-TARGET_BOOKS = {
-    "fanduel", "draftkings", "betmgm", "bet365",
-    "williamhill_us", "pointsbetus", "bovada",
-}
+TARGET_BOOKS = {"fanduel"}
 
 
 # ── Name matching ─────────────────────────────────────────────────────────────
@@ -171,7 +168,7 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
 
             events = events_resp.json()
 
-            # Find games in next 4 days
+            # Find games in next 4 days, preferring the first day with DB matches.
             target_events = []
             target_date   = None
             for days_ahead in range(4):
@@ -184,14 +181,34 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
                     if e.get("commence_time", "").startswith(check_str)
                     or e.get("commence_time", "").startswith(next_str)
                 ]
-                if day_events:
-                    target_events = day_events
+                if not day_events:
+                    continue
+
+                matched_events = []
+                for event in day_events:
+                    game = _find_game(
+                        db,
+                        event.get("home_team", ""),
+                        event.get("away_team", ""),
+                        game_date=check_date,
+                    )
+                    if game:
+                        matched_events.append(event)
+
+                if matched_events:
+                    target_events = matched_events
                     target_date   = check_date
                     break
 
+                logger.info(
+                    "No DB game matches found for %s events on %s — checking next day",
+                    len(day_events),
+                    check_date,
+                )
+
             if not target_events:
-                logger.info("No NBA games in the next 3 days — skipping odds fetch")
-                summary["errors"].append("No games in next 3 days")
+                logger.info("No NBA games with DB matches in the next 4 days — skipping odds fetch")
+                summary["errors"].append("No games with DB matches in next 4 days")
                 return summary
 
             if target_date == date.today():
@@ -208,11 +225,11 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
                 home_team  = event.get("home_team", "")
                 away_team  = event.get("away_team", "")
 
-                # Find matching game in our DB
+                # Find matching game in our DB (should already be matchable from pre-filter)
                 game = _find_game(db, home_team, away_team, game_date=target_date)
                 if not game:
-                    logger.warning(f"Could not match game: {away_team} @ {home_team}")
-                    summary["errors"].append(f"No DB match: {away_team} @ {home_team}")
+                    logger.warning(f"Could not match game after pre-check: {away_team} @ {home_team}")
+                    summary["errors"].append(f"No DB match after pre-check: {away_team} @ {home_team}")
                     continue
 
                 try:
@@ -220,7 +237,7 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
                         f"{ODDS_API_BASE}/sports/{SPORT}/events/{event_id}/odds",
                         params={
                             "apiKey":     api_key,
-                            "regions":    REGIONS,
+                            "bookmakers": BOOKMAKERS,
                             "markets":    ",".join(MARKETS),
                             "oddsFormat": ODDS_FORMAT,
                         },
