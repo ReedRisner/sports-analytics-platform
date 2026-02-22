@@ -112,14 +112,18 @@ def get_team_stats_df(season, measure_type, per_mode="PerGame"):
         vs_conference_nullable        = "",
         vs_division_nullable          = "",
     )
+
+    # ✅ use longer timeout + your browser-like headers so NBA stats doesn't throttle as much
+    extra = dict(timeout=160, headers=SESSION.headers)
+
     try:
-        df = leaguedashteamstats.LeagueDashTeamStats(**kwargs).get_data_frames()[0]
+        df = leaguedashteamstats.LeagueDashTeamStats(**kwargs, **extra).get_data_frames()[0]
         print(f"    ✓ {measure_type} ({season}): {len(df)} teams")
         return df
     except Exception as e:
         print(f"    {season} failed ({e}) → fallback {FALLBACK}")
         kwargs['season'] = FALLBACK
-        df = leaguedashteamstats.LeagueDashTeamStats(**kwargs).get_data_frames()[0]
+        df = leaguedashteamstats.LeagueDashTeamStats(**kwargs, **extra).get_data_frames()[0]
         print(f"    ✓ {measure_type} ({FALLBACK}): {len(df)} teams")
         return df
 
