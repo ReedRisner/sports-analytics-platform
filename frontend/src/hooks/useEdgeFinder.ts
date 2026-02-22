@@ -13,7 +13,7 @@ export function useEdgeFinder(
   return useQuery({
     queryKey: ['edges', statType, sportsbook, minEdgePct, position],
     queryFn: () => oddsAPI.getEdgeFinder(statType, sportsbook, minEdgePct, position),
-    refetchInterval: 30000, // Refetch every 30 seconds
-    staleTime: 20000, // Consider data stale after 20 seconds
+    refetchInterval: 180000, // Refetch every 3 minutes
+    staleTime: 180000, // Consider data stale after 3 minutes
   })
 }
