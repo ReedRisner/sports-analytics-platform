@@ -112,8 +112,8 @@ def _find_status_for_player(player_name: str, injuries: list) -> Optional[str]:
         if not isinstance(inj, dict):
             continue
 
-        injury_name = inj.get("Player Name", "")
-        status = inj.get("Current Status")
+        injury_name = _extract_player_name(inj)
+        status = _extract_injury_status(inj)
         if not injury_name or not status:
             continue
 
@@ -127,17 +127,48 @@ def _find_status_for_player(player_name: str, injuries: list) -> Optional[str]:
 
 def _team_matches_injury_record(team_name: str, team_abbreviation: str, injury_record: dict) -> bool:
     """Check whether an injury record likely belongs to the provided NBA team."""
-    team_field = str(injury_record.get("Team", "") or "").strip().lower()
+    team_field = str(
+        injury_record.get("Team")
+        or injury_record.get("Team Name")
+        or injury_record.get("team")
+        or ""
+    ).strip().lower()
     if not team_field:
         return False
 
     normalized_name = str(team_name or "").strip().lower()
     normalized_abbr = str(team_abbreviation or "").strip().lower()
+    name_tokens = [token for token in normalized_name.split() if token]
+    city_token = name_tokens[0] if name_tokens else ""
+    mascot_token = name_tokens[-1] if name_tokens else ""
 
     return (
         (normalized_name and normalized_name in team_field)
         or (normalized_abbr and normalized_abbr in team_field)
+        or (city_token and city_token in team_field)
+        or (mascot_token and mascot_token in team_field)
     )
+
+
+def _extract_injury_status(injury_record: dict) -> str:
+    """Read status fields from the feed while handling schema differences."""
+    return str(
+        injury_record.get("Current Status")
+        or injury_record.get("Game Status")
+        or injury_record.get("Status")
+        or injury_record.get("current_status")
+        or ""
+    ).strip()
+
+
+def _extract_player_name(injury_record: dict) -> str:
+    """Read player name fields from the feed while handling schema differences."""
+    return str(
+        injury_record.get("Player Name")
+        or injury_record.get("Player")
+        or injury_record.get("player_name")
+        or ""
+    ).strip()
 
 
 def _find_status_for_player_and_team(
@@ -164,8 +195,8 @@ def _find_status_for_player_and_team(
         if not isinstance(inj, dict):
             continue
 
-        injury_name = inj.get("Player Name", "")
-        status = inj.get("Current Status")
+        injury_name = _extract_player_name(inj)
+        status = _extract_injury_status(inj)
         if not injury_name or not status:
             continue
 
@@ -236,6 +267,8 @@ def fetch_todays_injuries(game_date: Optional[date] = None) -> list:
         datetime(game_date.year, game_date.month, game_date.day, 0, 0),
         # Midday update window
         datetime(game_date.year, game_date.month, game_date.day, 12, 0),
+        # Explicit midday update windows
+        datetime(game_date.year, game_date.month, game_date.day, 13, 0),
         # Traditional evening report window
         datetime(game_date.year, game_date.month, game_date.day, 17, 0),
         # Fallback to prior evening report if today's snapshots are unavailable
@@ -412,7 +445,7 @@ def get_player_injury_status(
     for inj in (team_injuries or injuries):
         if not isinstance(inj, dict):
             continue
-        if _name_similarity(player.name, inj.get("Player Name", "")) < 0.85:
+        if _name_similarity(player.name, _extract_player_name(inj)) < 0.85:
             continue
         team_field = str(inj.get("Team", ""))
         if not team_field or team.name in team_field or team.abbreviation in team_field:
