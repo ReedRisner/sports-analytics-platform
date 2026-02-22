@@ -7,6 +7,18 @@ import { Filter, SortAsc, SortDesc } from 'lucide-react'
 type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak' | 'no_vig'
 type SortDirection = 'asc' | 'desc'
 
+
+const getGoblinOffset = (statType: string, edgePct: number = 0): number => {
+  const edgeBoost = Math.min(Math.abs(edgePct) / 8, 2)
+
+  if (statType === 'points') return 1.5 + edgeBoost * 2.25 // ~1.5 to 6+
+  if (statType === 'assists' || statType === 'rebounds') return 0.5 + edgeBoost * 1.25 // ~0.5 to 3
+  if (statType === 'pra' || statType === 'pr' || statType === 'pa' || statType === 'ra') return 2 + edgeBoost * 3 // ~2 to 8+
+  if (statType === 'threes') return 0.5 + edgeBoost * 0.75 // ~0.5 to 2
+
+  return 1 + edgeBoost
+}
+
 /**
  * Edge Finder - Filterable table of all edges
  */
@@ -21,16 +33,29 @@ export default function EdgeFinder() {
   const [sortField, setSortField] = useState<SortField>('edge_pct')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
-  // Fetch edges with filters - ALWAYS use FanDuel
+  // Fetch edges with filters (Goblin mode still uses FanDuel baseline lines)
   const { data: edges, isLoading, error } = useEdgeFinder(
     goblinMode ? undefined : (statType || undefined),
-    goblinMode ? 'prizepicks' : 'fanduel',
+    'fanduel',
     goblinMode ? 0 : minEdge,
     position || undefined
   )
 
   const processedEdges = goblinMode
-    ? (edges || []).filter((edge) => edge.streak?.streak_type === 'hit' && (edge.streak?.current_streak || 0) > 0)
+    ? (edges || [])
+        .map((edge) => {
+          const offset = getGoblinOffset(edge.stat_type, edge.edge_pct || 0)
+          const direction = edge.recommendation === 'UNDER' ? 1 : -1
+          const goblinLine = Math.max(0, Number((edge.line + direction * offset).toFixed(1)))
+          const goblinEdgePct = goblinLine ? ((edge.projected - goblinLine) / goblinLine) * 100 : edge.edge_pct || 0
+
+          return {
+            ...edge,
+            line: goblinLine,
+            edge_pct: Number(goblinEdgePct.toFixed(1)),
+          }
+        })
+        .filter((edge) => edge.streak?.streak_type === 'hit' && (edge.streak?.current_streak || 0) > 0)
     : (edges || [])
 
   // Sort edges
@@ -296,7 +321,7 @@ export default function EdgeFinder() {
         <div className="text-sm text-muted-foreground">
           Showing {sortedEdges.length} edge{sortedEdges.length !== 1 ? 's' : ''}
           {hasFilters && ' with current filters'}
-          {goblinMode && ' (PrizePicks + active hit streaks across all stats)'}
+          {goblinMode && ' (simulated Goblin lines + active hit streaks across all stats)'}
         </div>
       )}
 
@@ -311,7 +336,12 @@ export default function EdgeFinder() {
       )}
 
       {/* Edges Table */}
-      <EdgesTable edges={sortedEdges} isLoading={isLoading} />
+      <EdgesTable
+        edges={sortedEdges}
+        isLoading={isLoading}
+        emptyTitle={goblinMode ? 'No goblin edges found' : 'No edges found'}
+        emptyDescription={goblinMode ? 'Try adjusting your filters or check back later for goblin projections.' : 'Try adjusting your filters or check back later'}
+      />
     </div>
   )
 }

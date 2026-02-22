@@ -53,6 +53,17 @@ interface TrackedBet {
   streak_type?: string
 }
 
+interface AccuracySectionScore {
+  key: string
+  label: string
+  stat_type: string
+  winRate: number
+  wins: number
+  losses: number
+  pushes: number
+  sampleSize: number
+}
+
 interface BetSummary {
   total: number
   wins: number
@@ -99,6 +110,29 @@ export default function AccuracyPage() {
     }
   }
 
+
+  const buildSectionScore = (
+    key: string,
+    label: string,
+    stat: string,
+    bets: TrackedBet[],
+  ): AccuracySectionScore | null => {
+    const summary = summarizeTrackedBets(bets)
+    const graded = summary.wins + summary.losses
+    if (graded === 0) return null
+
+    return {
+      key,
+      label,
+      stat_type: stat,
+      winRate: summary.winRate,
+      wins: summary.wins,
+      losses: summary.losses,
+      pushes: summary.pushes,
+      sampleSize: graded,
+    }
+  }
+
   const renderTrackedBets = (bets: TrackedBet[], showStreak = false) => (
     <div className="overflow-x-auto rounded-xl border border-border">
       <table className="w-full text-sm">
@@ -138,6 +172,49 @@ export default function AccuracyPage() {
       </table>
     </div>
   )
+
+
+  const { data: top30DaySections } = useQuery<AccuracySectionScore[]>({
+    queryKey: ['accuracy-top-sections-30d'],
+    queryFn: async () => {
+      const statEntries = Object.keys(STAT_TYPES)
+
+      const responses = await Promise.all(
+        statEntries.map(async (stat) => {
+          try {
+            const params = new URLSearchParams({
+              stat_type: stat,
+              days_back: '30',
+            })
+            const { data } = await apiClient.get(`/projections/accuracy?${params}`)
+            return { stat, data: data as AccuracyData }
+          } catch {
+            return { stat, data: null as AccuracyData | null }
+          }
+        })
+      )
+
+      const scored = responses.flatMap(({ stat, data }) => {
+        if (!data || data.sample_size === 0) return []
+
+        const sections: Array<AccuracySectionScore | null> = [
+          buildSectionScore(`edge-${stat}`, 'Edge', stat, data.top_edge_bets ?? []),
+          buildSectionScore(`streak-${stat}`, 'Streak', stat, data.top_streaky_bets ?? []),
+          buildSectionScore(`no-vig-${stat}`, 'No-Vig', stat, data.top_no_vig_bets ?? []),
+        ]
+
+        return sections.filter((section): section is AccuracySectionScore => section !== null)
+      })
+
+      return scored
+        .sort((a, b) => {
+          if (b.winRate !== a.winRate) return b.winRate - a.winRate
+          return b.sampleSize - a.sampleSize
+        })
+        .slice(0, 3)
+    },
+    staleTime: 5 * 60_000,
+  })
 
   // Fetch accuracy data
   const { data: accuracy, isLoading, error } = useQuery<AccuracyData>({
@@ -231,6 +308,25 @@ export default function AccuracyPage() {
           </div>
         </div>
       </div>
+
+      {/* Top 3 Most Accurate Sections (30 Days) */}
+      {top30DaySections && top30DaySections.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-6">
+          <h2 className="mb-4 text-xl font-bold">Top 3 Most Accurate Sections (Past 30 Days)</h2>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {top30DaySections.map((section, idx) => (
+              <div key={section.key} className="rounded-lg border border-border bg-background p-4">
+                <div className="text-xs text-muted-foreground mb-1">#{idx + 1} • {section.label}</div>
+                <div className="text-lg font-bold">{STAT_TYPES[section.stat_type as keyof typeof STAT_TYPES] || section.stat_type}</div>
+                <div className="mt-2 text-3xl font-black text-green-400">{section.winRate.toFixed(1)}%</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {section.wins}W-{section.losses}L{section.pushes > 0 ? `-${section.pushes}P` : ''} • {section.sampleSize} graded
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Loading State */}
       {isLoading && (
