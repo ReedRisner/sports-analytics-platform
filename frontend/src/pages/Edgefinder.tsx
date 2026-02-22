@@ -12,7 +12,7 @@ const getGoblinOffset = (statType: string, edgePct: number = 0): number => {
   const edgeBoost = Math.min(Math.abs(edgePct) / 8, 2)
 
   if (statType === 'points') return 1.5 + edgeBoost * 2.25 // ~1.5 to 6+
-  if (statType === 'assists' || statType === 'rebounds') return 0.5 + edgeBoost * 1.25 // ~0.5 to 3
+  if (statType === 'assists' || statType === 'rebounds') return 1.5 + edgeBoost * 1.25 // ~1.5 to 4
   if (statType === 'pra' || statType === 'pr' || statType === 'pa' || statType === 'ra') return 2 + edgeBoost * 3 // ~2 to 8+
   if (statType === 'threes') return 0.5 + edgeBoost * 0.75 // ~0.5 to 2
 

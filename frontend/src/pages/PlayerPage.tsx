@@ -7,7 +7,6 @@ import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap, AlertTriangle, Clock3 
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { STAT_EXPLANATIONS } from '@/lib/stat-explanations'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts'
-import type { Edge } from '@/api/types'
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>()
@@ -25,7 +24,7 @@ export default function PlayerPage() {
       try {
         const { data } = await apiClient.get(`/players/${playerId}/projection`, {
           params: { stat_type: selectedStat },
-          timeout: 15000,
+          timeout: 180000,
         })
         return data
       } catch (error) {
@@ -35,7 +34,7 @@ export default function PlayerPage() {
     },
     enabled: !!playerId,
     retry: 1,
-    staleTime: 60_000,
+    staleTime: 180_000,
   })
 
   // Fetch player odds
@@ -53,7 +52,7 @@ export default function PlayerPage() {
     },
     enabled: !!playerId,
     retry: 1,
-    staleTime: 60_000,
+    staleTime: 180_000,
   })
 
   // Fetch Monte Carlo simulation if we have a line AND user clicked the button
@@ -74,7 +73,7 @@ export default function PlayerPage() {
             stat_type: selectedStat,
             line: playerOdds.line
           },
-          timeout: 60000, // 60 second timeout
+          timeout: 180000, // 3 minute timeout
         })
         console.log('Monte Carlo Response:', data)
         console.log('Monte Carlo expected_value:', data.expected_value)
@@ -88,43 +87,6 @@ export default function PlayerPage() {
     },
     enabled: !!playerId && !!playerOdds?.line && runMonteCarlo,
     retry: false,
-  })
-
-  // Goblin-style streak leaders (PrizePicks): longest active hit streaks
-  const { data: goblinStreakLeaders } = useQuery({
-    queryKey: ['goblin-streak-leaders', selectedStat],
-    queryFn: async () => {
-      try {
-        const { data } = await apiClient.get('/odds/edge-finder', {
-          params: {
-            sportsbook: 'prizepicks',
-            stat_type: selectedStat,
-            min_edge_pct: 0,
-          },
-          timeout: 30000,
-        })
-
-        const edges: Edge[] = Array.isArray(data) ? data : data?.edges || []
-
-        return edges
-          .filter((edge) => edge.streak?.streak_type === 'hit' && (edge.streak?.current_streak || 0) > 0)
-          .sort((a, b) => {
-            const streakDiff = (b.streak?.current_streak || 0) - (a.streak?.current_streak || 0)
-            if (streakDiff !== 0) return streakDiff
-
-            const hitRateDiff = (b.streak?.hit_rate || 0) - (a.streak?.hit_rate || 0)
-            if (hitRateDiff !== 0) return hitRateDiff
-
-            return (b.edge_pct || 0) - (a.edge_pct || 0)
-          })
-          .slice(0, 5)
-      } catch (error) {
-        console.error('Error loading goblin streak leaders:', error)
-        return [] as Edge[]
-      }
-    },
-    enabled: !!selectedStat,
-    staleTime: 60_000,
   })
 
   // Fetch game log - endpoint may not exist yet
@@ -656,39 +618,29 @@ export default function PlayerPage() {
         </div>
       )}
 
-      {/* Goblin Streak Leaders */}
+      {/* Injured Teammates Context */}
       <div className="rounded-xl border border-border bg-card p-6">
         <div className="flex items-center justify-between mb-4 gap-3">
-          <h2 className="text-xl font-bold">Goblin Streak Leaders</h2>
-          <span className="text-xs text-muted-foreground">
-            PrizePicks-style lean: longest active hit streaks for {STAT_TYPES[selectedStat as keyof typeof STAT_TYPES] || selectedStat}
-          </span>
+          <h2 className="text-xl font-bold">Injured Teammates</h2>
+          <span className="text-xs text-muted-foreground">Includes current status and average minutes per game.</span>
         </div>
 
-        <p className="text-xs text-muted-foreground mb-4">
-          These are streak-based signals, not guaranteed outcomes.
-        </p>
-
-        {goblinStreakLeaders && goblinStreakLeaders.length > 0 ? (
+        {projection.team_injuries && projection.team_injuries.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
                   <th className="text-left py-2">Player</th>
-                  <th className="text-left py-2">Team</th>
-                  <th className="text-right py-2">Streak</th>
-                  <th className="text-right py-2">Hit Rate</th>
-                  <th className="text-right py-2">Edge</th>
+                  <th className="text-left py-2">Status</th>
+                  <th className="text-right py-2">MPG</th>
                 </tr>
               </thead>
               <tbody>
-                {goblinStreakLeaders.map((edge) => (
-                  <tr key={`${edge.player_id}-${edge.stat_type}-${edge.recommendation}`} className="border-b border-border/40 last:border-0">
-                    <td className="py-2 font-medium">{edge.player_name}</td>
-                    <td className="py-2 text-muted-foreground">{edge.team_abbr}</td>
-                    <td className="py-2 text-right font-mono text-green-400">{edge.streak?.current_streak || 0}x</td>
-                    <td className="py-2 text-right font-mono">{(edge.streak?.hit_rate || 0).toFixed(0)}%</td>
-                    <td className="py-2 text-right font-mono">{edge.edge_pct !== undefined ? `${edge.edge_pct > 0 ? '+' : ''}${edge.edge_pct.toFixed(1)}%` : '—'}</td>
+                {projection.team_injuries.map((injury: any) => (
+                  <tr key={`${injury.player_name}-${injury.status}`} className="border-b border-border/40 last:border-0">
+                    <td className="py-2 font-medium">{injury.player_name}</td>
+                    <td className="py-2 text-amber-300">{injury.status}</td>
+                    <td className="py-2 text-right font-mono">{injury.mpg !== null && injury.mpg !== undefined ? injury.mpg.toFixed(1) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -696,7 +648,7 @@ export default function PlayerPage() {
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-            No active hit streak leaders found for PrizePicks on this stat right now.
+            No injured teammates reported right now.
           </div>
         )}
       </div>

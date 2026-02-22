@@ -63,7 +63,7 @@ def _process_single_edge(args):
             player_id=player.id,
             stat_type=ol.stat_type,
             line=ol.line,
-            limit=10
+            limit=25
         )
         
         # Calculate EV

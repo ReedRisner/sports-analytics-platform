@@ -5,7 +5,7 @@ import { AppRouter } from './router'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30000, // 30 seconds
+      staleTime: 180000, // 3 minutes
       retry: 1,
       refetchOnWindowFocus: false,
     },

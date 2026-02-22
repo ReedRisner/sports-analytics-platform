@@ -79,6 +79,21 @@ def _recommended_no_vig_probability(over_odds: Optional[int], under_odds: Option
         return round(fair_under, 4)
     return None
 
+def _top_n_per_day(rows, selector, per_day_limit: int = 10):
+    """Return up to N rows per game date, preserving date-desc ordering."""
+    grouped = {}
+    for row in rows:
+        game = row[1]
+        grouped.setdefault(game.date, []).append(row)
+
+    selected = []
+    for game_date in sorted(grouped.keys(), reverse=True):
+        ranked = sorted(grouped[game_date], key=selector, reverse=True)
+        selected.extend(ranked[:per_day_limit])
+
+    return selected
+
+
 
 def grade_yesterdays_projections(db: Session, target_date: Optional[date] = None):
     """
@@ -311,7 +326,7 @@ def calculate_model_accuracy(
         }
 
     sorted_by_edge = sorted(detailed_rows, key=lambda row: abs((row[0].edge_pct or 0)), reverse=True)
-    top_edge_rows = _dedupe_by_player_day(sorted_by_edge)[:10]
+    top_edge_rows = _top_n_per_day(_dedupe_by_player_day(sorted_by_edge), selector=lambda row: abs((row[0].edge_pct or 0)), per_day_limit=10)
     top_edge_bets = [
         _base_bet_payload(row)
         for row in top_edge_rows
@@ -355,7 +370,11 @@ def calculate_model_accuracy(
         seen_streaky.add(key)
         deduped_streaky.append(bet)
     top_streaky_bets = deduped_streaky
-    top_streaky_bets = top_streaky_bets[:10]
+    top_streaky_bets = [
+        bet
+        for game_date in sorted({bet["game_date"] for bet in deduped_streaky}, reverse=True)
+        for bet in sorted([item for item in deduped_streaky if item["game_date"] == game_date], key=lambda item: item["streak_count"], reverse=True)[:10]
+    ]
 
     sorted_no_vig_rows = [
         row
@@ -377,7 +396,11 @@ def calculate_model_accuracy(
 
     top_no_vig_bets = [
         _base_bet_payload(row)
-        for row in _dedupe_by_player_day(sorted_no_vig_rows)[:10]
+        for row in _top_n_per_day(_dedupe_by_player_day(sorted_no_vig_rows), selector=lambda row: (_recommended_no_vig_probability(
+            row[5].over_odds if row[5] else None,
+            row[5].under_odds if row[5] else None,
+            row[0].recommendation,
+        ) or 0), per_day_limit=10)
     ]
     
     total = len(results)

@@ -8,7 +8,7 @@ def calculate_streak(
     player_id: int,
     stat_type: str,
     line: float,
-    limit: int = 10
+    limit: int = 25
 ) -> dict:
     """Calculate hit/miss streak for a player on a specific line."""
     

@@ -1,7 +1,7 @@
 # backend/app/routers/players.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from typing import Optional
 
 from app.database import get_db
@@ -303,7 +303,22 @@ def player_projection(
             if player_name.lower() == current_player_name:
                 continue
 
-            team_injuries.append({"player_name": player_name, "status": status})
+            teammate = db.query(Player).filter(func.lower(Player.name) == player_name.lower()).first()
+            teammate_mpg = None
+            if teammate:
+                teammate_minutes = (
+                    db.query(PlayerGameStats.minutes)
+                    .join(Game, PlayerGameStats.game_id == Game.id)
+                    .filter(PlayerGameStats.player_id == teammate.id, PlayerGameStats.minutes != None)
+                    .order_by(desc(Game.date))
+                    .limit(20)
+                    .all()
+                )
+                minute_values = [float(row[0]) for row in teammate_minutes if row[0] is not None]
+                if minute_values:
+                    teammate_mpg = round(sum(minute_values) / len(minute_values), 1)
+
+            team_injuries.append({"player_name": player_name, "status": status, "mpg": teammate_mpg})
 
         # Keep response compact and deterministic.
         team_injuries = sorted(team_injuries, key=lambda item: item["player_name"])[:8]
@@ -378,7 +393,7 @@ def get_player_game_log(
     Returns games in reverse chronological order (most recent first).
     """
     from app.models.player import PlayerGameStats, Game
-    from sqlalchemy import desc
+    from sqlalchemy import desc, func
     
     # Fetch recent games
     game_stats = (
