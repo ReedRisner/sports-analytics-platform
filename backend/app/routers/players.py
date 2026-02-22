@@ -12,7 +12,13 @@ from app.services.projection_engine import (
     compute_stat_averages,
     STAT_CONFIG,
 )
-from app.services.injury_tracker import fetch_todays_injuries, get_player_injury_status
+from app.services.injury_tracker import (
+    fetch_todays_injuries,
+    get_player_injury_status,
+    _extract_injury_status,
+    _extract_player_name,
+    _filter_injuries_for_team,
+)
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -277,25 +283,15 @@ def player_projection(
     team_injuries = []
     if team:
         injuries = fetch_todays_injuries()
-        team_name_l = (team.name or "").lower()
-        team_abbr_u = (team.abbreviation or "").upper()
+        team_injury_rows = _filter_injuries_for_team(team.name, team.abbreviation, injuries)
         current_player_name = (proj.player_name or "").lower()
 
-        for inj in injuries:
+        for inj in team_injury_rows:
             if not isinstance(inj, dict):
                 continue
 
-            team_field = str(inj.get("Team", "") or "")
-            if not team_field:
-                continue
-
-            team_field_l = team_field.lower()
-            team_field_u = team_field.upper()
-            if team_name_l not in team_field_l and team_abbr_u not in team_field_u:
-                continue
-
-            player_name = str(inj.get("Player Name") or "").strip()
-            status = str(inj.get("Current Status") or "").strip()
+            player_name = _extract_player_name(inj)
+            status = _extract_injury_status(inj)
             if not player_name or not status:
                 continue
 
