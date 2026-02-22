@@ -51,6 +51,15 @@ type AccuracySummaryByStrategy = {
   noVig: StrategySummary | null
 }
 
+type AccuracySummaryUnknown = Partial<AccuracySummaryByStrategy> | null | undefined
+
+const normalizeAccuracySummary = (value: AccuracySummaryUnknown): AccuracySummaryByStrategy => ({
+  general: value?.general ?? null,
+  edge: value?.edge ?? null,
+  streak: value?.streak ?? null,
+  noVig: value?.noVig ?? null,
+})
+
 const getRecommendedNoVigProbability = (edge: Edge): number => {
   if (edge.recommendation === 'OVER') return edge.no_vig_fair_over ?? 0
   if (edge.recommendation === 'UNDER') return edge.no_vig_fair_under ?? 0
@@ -115,7 +124,7 @@ export default function Dashboard() {
   )
 
   const { data: historicalAccuracy, isLoading: isAccuracyLoading } = useQuery({
-    queryKey: ['dashboard-accuracy-summary', selectedWindow],
+    queryKey: ['dashboard-accuracy-summary-v2', selectedWindow],
     queryFn: async (): Promise<AccuracySummaryByStrategy> => {
       const responses = await Promise.all(
         ACCURACY_STATS.map(async (statType) => {
@@ -189,14 +198,16 @@ export default function Dashboard() {
     staleTime: 1000 * 60 * 10,
   })
 
+  const normalizedAccuracy = normalizeAccuracySummary(historicalAccuracy)
+
   const strategyCards = useMemo(
     () => [
-      { key: 'general', title: 'Most Accurate (General)', data: historicalAccuracy?.general },
-      { key: 'edge', title: 'Most Accurate (Edge)', data: historicalAccuracy?.edge },
-      { key: 'streak', title: 'Most Accurate (Streak)', data: historicalAccuracy?.streak },
-      { key: 'noVig', title: 'Most Accurate (No-Vig)', data: historicalAccuracy?.noVig },
+      { key: 'general', title: 'Most Accurate (General)', data: normalizedAccuracy.general },
+      { key: 'edge', title: 'Most Accurate (Edge)', data: normalizedAccuracy.edge },
+      { key: 'streak', title: 'Most Accurate (Streak)', data: normalizedAccuracy.streak },
+      { key: 'noVig', title: 'Most Accurate (No-Vig)', data: normalizedAccuracy.noVig },
     ],
-    [historicalAccuracy]
+    [normalizedAccuracy]
   )
 
   const edges: Edge[] = Array.isArray(edgesResponse)
