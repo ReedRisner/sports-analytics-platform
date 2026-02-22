@@ -277,19 +277,33 @@ def player_projection(
     team_injuries = []
     if team:
         injuries = fetch_todays_injuries()
+        team_name_l = (team.name or "").lower()
+        team_abbr_u = (team.abbreviation or "").upper()
+        current_player_name = (proj.player_name or "").lower()
+
         for inj in injuries:
             if not isinstance(inj, dict):
                 continue
+
             team_field = str(inj.get("Team", "") or "")
             if not team_field:
                 continue
-            if team.name not in team_field and (team.abbreviation not in team_field):
+
+            team_field_l = team_field.lower()
+            team_field_u = team_field.upper()
+            if team_name_l not in team_field_l and team_abbr_u not in team_field_u:
                 continue
 
-            player_name = inj.get("Player Name")
-            status = inj.get("Current Status")
-            if player_name and status:
-                team_injuries.append({"player_name": player_name, "status": status})
+            player_name = str(inj.get("Player Name") or "").strip()
+            status = str(inj.get("Current Status") or "").strip()
+            if not player_name or not status:
+                continue
+
+            # Return teammate injuries (exclude the selected player).
+            if player_name.lower() == current_player_name:
+                continue
+
+            team_injuries.append({"player_name": player_name, "status": status})
 
         # Keep response compact and deterministic.
         team_injuries = sorted(team_injuries, key=lambda item: item["player_name"])[:8]
