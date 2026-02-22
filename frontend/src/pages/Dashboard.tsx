@@ -1,11 +1,24 @@
+import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import { BetCard } from '@/components/projections/BetCard'
-import { TrendingUp } from 'lucide-react'
+import { TrendingUp, Target } from 'lucide-react'
 import type { Edge } from '@/api/types'
+import { apiClient } from '@/api/client'
 
 const isAllowedDashboardStat = (edge: Edge) => (
   edge.stat_type !== 'steals' && edge.stat_type !== 'blocks'
 )
+
+const ACCURACY_STATS = ['points', 'rebounds', 'assists', 'pra'] as const
+
+type AccuracySummary = {
+  statType: string
+  winRate: number
+  roi: number
+  sampleSize: number
+}
 
 const getRecommendedNoVigProbability = (edge: Edge): number => {
   if (edge.recommendation === 'OVER') return edge.no_vig_fair_over ?? 0
@@ -38,6 +51,34 @@ export default function Dashboard() {
     undefined
   )
 
+  const { data: historicalAccuracy } = useQuery({
+    queryKey: ['dashboard-accuracy-summary'],
+    queryFn: async (): Promise<AccuracySummary[]> => {
+      const responses = await Promise.all(
+        ACCURACY_STATS.map(async (statType) => {
+          const { data } = await apiClient.get('/projections/accuracy', {
+            params: { stat_type: statType, days_back: 45 }
+          })
+          return {
+            statType,
+            winRate: data?.overall?.win_rate ?? 0,
+            roi: data?.overall?.roi ?? 0,
+            sampleSize: data?.sample_size ?? 0,
+          }
+        })
+      )
+
+      return responses
+        .filter((item) => item.sampleSize >= 25)
+        .sort((a, b) => {
+          const scoreA = a.roi * Math.log10(a.sampleSize)
+          const scoreB = b.roi * Math.log10(b.sampleSize)
+          return scoreB - scoreA
+        })
+    },
+    staleTime: 1000 * 60 * 20,
+  })
+
   const edges: Edge[] = Array.isArray(edgesResponse)
     ? edgesResponse
     : []
@@ -63,6 +104,8 @@ export default function Dashboard() {
     .filter((edge) => edge.recommendation !== 'PASS' && getRecommendedNoVigProbability(edge) > 0)
     .sort((a, b) => getRecommendedNoVigProbability(b) - getRecommendedNoVigProbability(a))
     .slice(0, 10)
+
+  const topAccurateMarkets = useMemo(() => (historicalAccuracy ?? []).slice(0, 3), [historicalAccuracy])
 
   const totalBetsFound = eligibleEdges.length
 
@@ -114,6 +157,29 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {topAccurateMarkets.length > 0 && (
+        <section className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-2xl font-bold tracking-tight">Most Accurate Markets (Last 45 Days)</h2>
+            <Link to="/accuracy" className="text-sm text-primary hover:underline">View full accuracy report</Link>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {topAccurateMarkets.map((market) => (
+              <div key={market.statType} className="rounded-xl border border-border bg-card p-5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm uppercase tracking-wider text-muted-foreground">{market.statType}</div>
+                  <Target className="w-4 h-4 text-primary" />
+                </div>
+                <div className="text-2xl font-bold text-green-400">{market.winRate.toFixed(1)}%</div>
+                <div className="text-sm text-muted-foreground mt-1">
+                  ROI {market.roi >= 0 ? '+' : ''}{market.roi.toFixed(1)}% • {market.sampleSize} tracked bets
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {isLoading && (
         <div className="flex items-center justify-center py-20">

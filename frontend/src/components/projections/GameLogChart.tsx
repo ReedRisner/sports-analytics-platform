@@ -121,8 +121,6 @@ export default function GameLogChart({ games, statType, line, filter, opponentAb
     ? historicalGames.reduce((sum, g) => sum + g.value, 0) / historicalGames.length
     : 0
 
-  console.log('GameLogChart DEBUG:', { line, average, chartDataLength: chartData.length })
-
   return (
     <div className="space-y-4">
       {/* Stats Summary */}
@@ -165,9 +163,11 @@ export default function GameLogChart({ games, statType, line, filter, opponentAb
             />
             <Tooltip 
               contentStyle={{ 
-                backgroundColor: 'hsl(var(--card))',
+                backgroundColor: 'hsl(var(--card) / 1)',
                 border: '1px solid hsl(var(--border))',
-                borderRadius: '8px'
+                borderRadius: '8px',
+                opacity: 1,
+                boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)'
               }}
               labelStyle={{ color: 'hsl(var(--foreground))' }}
               content={({ active, payload }) => {
