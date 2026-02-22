@@ -544,11 +544,12 @@ def get_game_lines(
 
 
 @router.post("/fetch")
-def trigger_odds_fetch(db: Session = Depends(get_db)):
+def trigger_odds_fetch():
     """
-    Manually trigger an odds fetch. Useful for testing without
-    waiting for the scheduled job.
+    Odds API fetching is disabled via HTTP on purpose.
+    Run `python -m app.services.odds_fetcher` manually when you want to refresh lines.
     """
-    from app.services.odds_fetcher import fetch_todays_odds
-    result = fetch_todays_odds(db=db)
-    return result
+    raise HTTPException(
+        status_code=403,
+        detail="Odds API fetch is manual-only. Run: python -m app.services.odds_fetcher",
+    )
