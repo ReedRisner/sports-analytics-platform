@@ -99,13 +99,19 @@ function buildRecommendation(legs: Edge[], strategy: ParlayStrategy, useNoVigOdd
   }
 }
 
-function takeTopUniquePlayers(edges: Edge[], size: number, scorer: (edge: Edge) => number) {
+function takeTopUniquePlayers(
+  edges: Edge[],
+  size: number,
+  scorer: (edge: Edge) => number,
+  canAddLeg?: (selected: Edge[], candidate: Edge) => boolean
+) {
   const used = new Set<number>()
   const selected: Edge[] = []
 
   const sorted = [...edges].sort((a, b) => scorer(b) - scorer(a))
   for (const edge of sorted) {
     if (used.has(edge.player_id)) continue
+    if (canAddLeg && !canAddLeg(selected, edge)) continue
     selected.push(edge)
     used.add(edge.player_id)
     if (selected.length === size) break
@@ -128,7 +134,7 @@ function strategyLabel(strategy: ParlayStrategy) {
 }
 
 export default function BetsPage() {
-  const { data: edges = [], isLoading } = useEdgeFinder('', '', 4)
+  const { data: edges = [], isLoading } = useEdgeFinder('', 'fanduel', 4)
 
   const [bankroll, setBankroll] = useState<number>(() => {
     const raw = localStorage.getItem(BANKROLL_STORAGE_KEY)
@@ -163,10 +169,15 @@ export default function BetsPage() {
   }, [bankroll])
 
   const candidateEdges = useMemo(
-    () => edges
-      .filter((edge) => edge.recommendation !== 'PASS')
-      .sort((a, b) => ((b.expected_value || b.edge_pct) - (a.expected_value || a.edge_pct)))
-      .slice(0, 50),
+    () => {
+      const fanduelEdges = edges.filter((edge) => edge.sportsbook?.toLowerCase() === 'fanduel')
+      const source = fanduelEdges.length > 0 ? fanduelEdges : edges
+
+      return source
+        .filter((edge) => edge.recommendation !== 'PASS')
+        .sort((a, b) => ((b.expected_value || b.edge_pct) - (a.expected_value || a.edge_pct)))
+        .slice(0, 50)
+    },
     [edges]
   )
 
@@ -175,9 +186,16 @@ export default function BetsPage() {
     const output: Record<number, ParlayRecommendation[]> = { 2: [], 4: [], 6: [] }
 
     sizes.forEach((size) => {
-      const edgeLegs = takeTopUniquePlayers(candidateEdges, size, (edge) => edge.edge_pct || 0)
-      const streakLegs = takeTopUniquePlayers(candidateEdges, size, (edge) => ((edge.streak?.current_streak || 0) * 100) + (edge.streak?.hit_rate || 0))
-      const vegasLegs = takeTopUniquePlayers(candidateEdges, size, (edge) => americanToDecimal(getNoVigOdds(edge)))
+      const preventSameTeamInTwoLeg = (selected: Edge[], candidate: Edge) => (size !== 2 || selected.length === 0 || selected[0].team_abbr !== candidate.team_abbr)
+
+      const edgeLegs = takeTopUniquePlayers(candidateEdges, size, (edge) => edge.edge_pct || 0, preventSameTeamInTwoLeg)
+      const streakLegs = takeTopUniquePlayers(
+        candidateEdges,
+        size,
+        (edge) => ((edge.streak?.current_streak || 0) * 100) + (edge.streak?.hit_rate || 0),
+        preventSameTeamInTwoLeg
+      )
+      const vegasLegs = takeTopUniquePlayers(candidateEdges, size, (edge) => americanToDecimal(getNoVigOdds(edge)), preventSameTeamInTwoLeg)
 
       if (edgeLegs.length === size) {
         output[size].push(buildRecommendation(edgeLegs, 'edge'))
@@ -255,6 +273,7 @@ export default function BetsPage() {
 
     const uniqueChosen = takeTopUniquePlayers(chosen, chosen.length, (edge) => edge.edge_pct || 0)
     if (uniqueChosen.length !== chosen.length || chosen.length !== customLegCount) return null
+    if (customLegCount === 2 && uniqueChosen[0]?.team_abbr === uniqueChosen[1]?.team_abbr) return null
 
     return buildRecommendation(uniqueChosen, 'custom')
   }, [customLegKeys, candidateEdges, customLegCount])
@@ -273,6 +292,11 @@ export default function BetsPage() {
 
       if (selectedPlayerIds.has(edge.player_id)) return current
 
+      if (customLegCount === 2 && current.length === 1) {
+        const existing = candidateEdges.find((item) => `${item.player_id}-${item.stat_type}-${item.recommendation}` === current[0])
+        if (existing && existing.team_abbr === edge.team_abbr) return current
+      }
+
       if (current.length >= customLegCount) return current
 
       return [...current, key]
@@ -283,7 +307,7 @@ export default function BetsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold mb-2">Parlay Builder</h1>
-        <p className="text-muted-foreground">Top parlays by Edge%, Streak, and No-Vig odds. Every parlay requires unique players.</p>
+        <p className="text-muted-foreground">Top parlays by Edge%, Streak, and No-Vig odds using FanDuel lines. Every parlay requires unique players.</p>
       </div>
 
       <div className="rounded-lg border border-border p-4 bg-card space-y-3">
