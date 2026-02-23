@@ -143,9 +143,6 @@ export default function EdgeFinder() {
         isLoading={isLoading}
         emptyTitle={'No edges found'}
         emptyDescription={'Try adjusting your filters or check back later'}
-        sortField={sortField}
-        sortDirection={sortDirection}
-        onSort={handleSort}
       />
     </div>
   )
