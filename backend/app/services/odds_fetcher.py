@@ -147,6 +147,55 @@ def _compact_error_message(exc: Exception) -> str:
     return str(exc)
 
 
+def _odds_upsert_conflict_config(db: Session) -> tuple[dict, tuple[str, ...]]:
+    """
+    Build ON CONFLICT args and de-duplication keys for odds_lines upserts.
+
+    Returns:
+      - kwargs for SQLAlchemy on_conflict_do_update(...)
+      - field names that define uniqueness for the active schema
+    """
+    unique_constraints = {
+        c.get("name")
+        for c in inspect(db.bind).get_unique_constraints("odds_lines")
+        if c.get("name")
+    }
+
+    if "uq_odds_player_game_stat_book_line" in unique_constraints:
+        return (
+            {"constraint": "uq_odds_player_game_stat_book_line"},
+            ("player_id", "game_id", "stat_type", "sportsbook", "line"),
+        )
+
+    if "uq_odds_player_game_stat_book" in unique_constraints:
+        return (
+            {"constraint": "uq_odds_player_game_stat_book"},
+            ("player_id", "game_id", "stat_type", "sportsbook"),
+        )
+
+    # Fallback for databases where constraints are unnamed but keys exist.
+    return (
+        {"index_elements": ["player_id", "game_id", "stat_type", "sportsbook", "line"]},
+        ("player_id", "game_id", "stat_type", "sportsbook", "line"),
+    )
+
+
+def _dedupe_rows(rows: list[dict], key_fields: tuple[str, ...]) -> list[dict]:
+    """Keep only the newest row per active unique key to prevent ON CONFLICT cardinality errors."""
+    deduped: dict[tuple, dict] = {}
+    for row in rows:
+        key = tuple(row.get(field) for field in key_fields)
+        deduped[key] = row
+    return list(deduped.values())
+
+
+def _compact_error_message(exc: Exception) -> str:
+    """Return a concise, user-readable error message without huge SQL payloads."""
+    if isinstance(exc, SQLAlchemyError) and getattr(exc, "orig", None) is not None:
+        return str(exc.orig)
+    return str(exc)
+
+
 # ── Name matching ─────────────────────────────────────────────────────────────
 def _normalize(name: str) -> str:
     """Lowercase, strip accents-ish, remove punctuation for fuzzy matching."""
