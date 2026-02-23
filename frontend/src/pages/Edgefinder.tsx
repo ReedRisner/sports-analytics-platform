@@ -7,18 +7,6 @@ import { Filter, SortAsc, SortDesc } from 'lucide-react'
 type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak' | 'no_vig'
 type SortDirection = 'asc' | 'desc'
 
-
-const getGoblinOffset = (statType: string, edgePct: number = 0): number => {
-  const edgeBoost = Math.min(Math.abs(edgePct) / 8, 2)
-
-  if (statType === 'points') return 1.5 + edgeBoost * 2.25 // ~1.5 to 6+
-  if (statType === 'assists' || statType === 'rebounds') return 1.5 + edgeBoost * 1.25 // ~1.5 to 4
-  if (statType === 'pra' || statType === 'pr' || statType === 'pa' || statType === 'ra') return 2 + edgeBoost * 3 // ~2 to 8+
-  if (statType === 'threes') return 0.5 + edgeBoost * 0.75 // ~0.5 to 2
-
-  return 1 + edgeBoost
-}
-
 /**
  * Edge Finder - Filterable table of all edges
  */
@@ -27,36 +15,19 @@ export default function EdgeFinder() {
   const [statType, setStatType] = useState<string>('')
   const [minEdge, setMinEdge] = useState<number>(3.0)
   const [position, setPosition] = useState<string>('')
-  const [goblinMode, setGoblinMode] = useState(false)
   
   // Sorting
   const [sortField, setSortField] = useState<SortField>('edge_pct')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
-  // Fetch edges with filters (Goblin mode still uses FanDuel baseline lines)
   const { data: edges, isLoading, error } = useEdgeFinder(
-    goblinMode ? undefined : (statType || undefined),
+    statType || undefined,
     'fanduel',
-    goblinMode ? 0 : minEdge,
+    minEdge,
     position || undefined
   )
 
-  const processedEdges = goblinMode
-    ? (edges || [])
-        .map((edge) => {
-          const offset = getGoblinOffset(edge.stat_type, edge.edge_pct || 0)
-          const direction = edge.recommendation === 'UNDER' ? 1 : -1
-          const goblinLine = Math.max(0, Number((edge.line + direction * offset).toFixed(1)))
-          const goblinEdgePct = goblinLine ? ((edge.projected - goblinLine) / goblinLine) * 100 : edge.edge_pct || 0
-
-          return {
-            ...edge,
-            line: goblinLine,
-            edge_pct: Number(goblinEdgePct.toFixed(1)),
-          }
-        })
-        .filter((edge) => edge.streak?.streak_type === 'hit' && (edge.streak?.current_streak || 0) > 0)
-    : (edges || [])
+  const processedEdges = edges || []
 
   // Sort edges
   const sortedEdges = processedEdges ? [...processedEdges].sort((a, b) => {
@@ -123,10 +94,9 @@ export default function EdgeFinder() {
     setStatType('')
     setMinEdge(3.0)
     setPosition('')
-    setGoblinMode(false)
   }
 
-  const hasFilters = statType || minEdge !== 3.0 || position || goblinMode
+  const hasFilters = statType || minEdge !== 3.0 || position
 
   return (
     <div className="space-y-6">
@@ -219,26 +189,6 @@ export default function EdgeFinder() {
         <span className="text-sm font-medium">Sort by:</span>
 
         <button
-          onClick={() => {
-            const next = !goblinMode
-            setGoblinMode(next)
-            if (next) {
-              setSortField('streak')
-              setSortDirection('desc')
-              setStatType('')
-              setMinEdge(0)
-            }
-          }}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            goblinMode
-              ? 'border-purple-400 bg-purple-500/10 text-purple-300'
-              : 'border-border hover:border-purple-400/60'
-          }`}
-        >
-          <span className="text-sm">👺 Goblins</span>
-        </button>
-        
-        <button
           onClick={() => handleSort('edge_pct')}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
             sortField === 'edge_pct'
@@ -321,7 +271,6 @@ export default function EdgeFinder() {
         <div className="text-sm text-muted-foreground">
           Showing {sortedEdges.length} edge{sortedEdges.length !== 1 ? 's' : ''}
           {hasFilters && ' with current filters'}
-          {goblinMode && ' (simulated Goblin lines + active hit streaks across all stats)'}
         </div>
       )}
 
@@ -339,8 +288,8 @@ export default function EdgeFinder() {
       <EdgesTable
         edges={sortedEdges}
         isLoading={isLoading}
-        emptyTitle={goblinMode ? 'No goblin edges found' : 'No edges found'}
-        emptyDescription={goblinMode ? 'Try adjusting your filters or check back later for goblin projections.' : 'Try adjusting your filters or check back later'}
+        emptyTitle={'No edges found'}
+        emptyDescription={'Try adjusting your filters or check back later'}
       />
     </div>
   )
