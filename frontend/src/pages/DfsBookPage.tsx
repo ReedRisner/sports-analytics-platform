@@ -11,34 +11,70 @@ interface DfsBookPageProps {
   notes?: string[]
 }
 
+type LineTypeFilter = 'all' | 'goblin' | 'demon' | 'normal'
+
 function getRecommendedProbability(edge: Edge): number {
   return edge.recommendation === 'OVER' ? edge.over_prob : edge.under_prob
+}
+
+function getDisplayProbability(edge: Edge): number {
+  const prob = getRecommendedProbability(edge)
+  return prob > 1 ? prob : prob * 100
+}
+
+function getRecommendedOdds(edge: Edge): number {
+  return edge.recommendation === 'OVER' ? (edge.over_odds ?? -119) : (edge.under_odds ?? -119)
 }
 
 function getStreakLength(edge: Edge): number {
   return edge.streak?.current_streak ?? 0
 }
 
-function sortByBestLine(edges: Edge[]): Edge[] {
-  return [...edges].sort((a, b) => {
-    const aProb = getRecommendedProbability(a)
-    const bProb = getRecommendedProbability(b)
-    const aDisplayProb = aProb > 1 ? aProb : aProb * 100
-    const bDisplayProb = bProb > 1 ? bProb : bProb * 100
+function classifyLineType(edge: Edge): Exclude<LineTypeFilter, 'all'> {
+  const recOdds = getRecommendedOdds(edge)
 
-    const probDiff = bDisplayProb - aDisplayProb
+  // DFS books: plus-money adjusted lines are higher-risk demon style.
+  if (recOdds >= 100) {
+    return 'demon'
+  }
+
+  // Favor "safe" lower adjusted lines as goblins.
+  if (recOdds <= -130) {
+    return 'goblin'
+  }
+
+  return 'normal'
+}
+
+function sortBySafestGoblin(edges: Edge[]): Edge[] {
+  return [...edges].sort((a, b) => {
+    const streakDiff = getStreakLength(b) - getStreakLength(a)
+    if (streakDiff !== 0) return streakDiff
+
+    const probDiff = getDisplayProbability(b) - getDisplayProbability(a)
     if (Math.abs(probDiff) > 0.01) return probDiff
 
     return Math.abs(b.edge_pct) - Math.abs(a.edge_pct)
   })
 }
 
-function sortByLongestStreak(edges: Edge[]): Edge[] {
+function sortByRiskyDemonOver(edges: Edge[]): Edge[] {
   return [...edges].sort((a, b) => {
-    const streakDiff = getStreakLength(b) - getStreakLength(a)
-    if (streakDiff !== 0) return streakDiff
+    const aScore = getDisplayProbability(a) * 0.6 + Math.abs(a.edge_pct) * 0.4
+    const bScore = getDisplayProbability(b) * 0.6 + Math.abs(b.edge_pct) * 0.4
+    return bScore - aScore
+  })
+}
 
-    return Math.abs(b.edge_pct) - Math.abs(a.edge_pct)
+function sortByBestFive(edges: Edge[]): Edge[] {
+  return [...edges].sort((a, b) => {
+    const aStreakBonus = Math.min(getStreakLength(a), 8) * 2
+    const bStreakBonus = Math.min(getStreakLength(b), 8) * 2
+
+    const aScore = getDisplayProbability(a) + Math.abs(a.edge_pct) + aStreakBonus
+    const bScore = getDisplayProbability(b) + Math.abs(b.edge_pct) + bStreakBonus
+
+    return bScore - aScore
   })
 }
 
@@ -49,6 +85,7 @@ function sortByEdge(edges: Edge[]): Edge[] {
 export default function DfsBookPage({ title, sportsbook, description, notes = [] }: DfsBookPageProps) {
   const [statType, setStatType] = useState<string>('')
   const [position, setPosition] = useState<string>('')
+  const [lineType, setLineType] = useState<LineTypeFilter>('all')
   const [minEdge, setMinEdge] = useState<number>(2)
 
   const { data: edges, isLoading, error } = useEdgeFinder(
@@ -58,10 +95,24 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
     position || undefined
   )
 
-  const filteredEdges = edges || []
+  const allEdges = edges || []
 
-  const bestLines = useMemo(() => sortByBestLine(filteredEdges).slice(0, 8), [filteredEdges])
-  const longestStreaks = useMemo(() => sortByLongestStreak(filteredEdges).slice(0, 8), [filteredEdges])
+  const filteredEdges = useMemo(() => {
+    if (lineType === 'all') return allEdges
+    return allEdges.filter((edge) => classifyLineType(edge) === lineType)
+  }, [allEdges, lineType])
+
+  const safeGoblinStreaks = useMemo(
+    () => sortBySafestGoblin(allEdges.filter((edge) => classifyLineType(edge) === 'goblin')).slice(0, 8),
+    [allEdges]
+  )
+
+  const riskyDemonOvers = useMemo(
+    () => sortByRiskyDemonOver(allEdges.filter((edge) => classifyLineType(edge) === 'demon' && edge.recommendation === 'OVER')).slice(0, 8),
+    [allEdges]
+  )
+
+  const bestFivePicks = useMemo(() => sortByBestFive(filteredEdges).slice(0, 5), [filteredEdges])
   const strongestEdges = useMemo(() => sortByEdge(filteredEdges), [filteredEdges])
 
   return (
@@ -82,29 +133,35 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="text-sm text-muted-foreground">Best lines to take</div>
-          <div className="mt-1 text-2xl font-semibold">{bestLines.length}</div>
-          <div className="text-xs text-muted-foreground mt-1">Top recommended lines by win probability + edge</div>
+          <div className="text-sm text-muted-foreground">Safest goblin streaks</div>
+          <div className="mt-1 text-2xl font-semibold">{safeGoblinStreaks.length}</div>
+          <div className="text-xs text-muted-foreground mt-1">Longest streaks on lower adjusted lines</div>
         </div>
 
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="text-sm text-muted-foreground">Longest streak lines</div>
-          <div className="mt-1 text-2xl font-semibold">{longestStreaks.length}</div>
-          <div className="text-xs text-muted-foreground mt-1">Hot hit/miss streak props (including alternate lines)</div>
+          <div className="text-sm text-muted-foreground">Best demon risks</div>
+          <div className="mt-1 text-2xl font-semibold">{riskyDemonOvers.length}</div>
+          <div className="text-xs text-muted-foreground mt-1">Top OVER demon/adjusted risk lines</div>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="text-sm text-muted-foreground">Best 5 picks</div>
+          <div className="mt-1 text-2xl font-semibold">{bestFivePicks.length}</div>
+          <div className="text-xs text-muted-foreground mt-1">Highest blended confidence for this DFS board</div>
         </div>
 
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-sm text-muted-foreground">Total qualified lines</div>
           <div className="mt-1 text-2xl font-semibold">{filteredEdges.length}</div>
-          <div className="text-xs text-muted-foreground mt-1">Filtered by stat, position, and minimum edge</div>
+          <div className="text-xs text-muted-foreground mt-1">Filtered by stat, position, edge, and line type</div>
         </div>
       </div>
 
       <div className="rounded-xl border border-border bg-card p-6">
         <h2 className="text-lg font-semibold mb-4">Filters</h2>
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           <div>
             <label className="text-sm font-medium mb-2 block">Stat Type</label>
             <select
@@ -134,6 +191,20 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
           </div>
 
           <div>
+            <label className="text-sm font-medium mb-2 block">Line Type</label>
+            <select
+              value={lineType}
+              onChange={(e) => setLineType(e.target.value as LineTypeFilter)}
+              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+            >
+              <option value="all">All Lines</option>
+              <option value="goblin">Goblin / Safe Adjusted</option>
+              <option value="demon">Demon / Risk Adjusted</option>
+              <option value="normal">Normal Lines</option>
+            </select>
+          </div>
+
+          <div>
             <label className="text-sm font-medium mb-2 block">Min Edge: {minEdge}%</label>
             <input
               type="range"
@@ -159,23 +230,33 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
 
       <div className="grid gap-6 xl:grid-cols-2">
         <div>
-          <h3 className="text-lg font-semibold mb-3">Best lines to take</h3>
+          <h3 className="text-lg font-semibold mb-3">Safest bets (goblin streaks)</h3>
           <EdgesTable
-            edges={bestLines}
+            edges={safeGoblinStreaks}
             isLoading={isLoading}
-            emptyTitle="No high-quality lines found"
-            emptyDescription="Try lowering minimum edge or widening filters"
+            emptyTitle="No goblin-safe streaks found"
+            emptyDescription="Try lowering minimum edge or check when more adjusted lines are posted"
           />
         </div>
         <div>
-          <h3 className="text-lg font-semibold mb-3">Longest over/under streaks</h3>
+          <h3 className="text-lg font-semibold mb-3">Best demon risk lines (OVER)</h3>
           <EdgesTable
-            edges={longestStreaks}
+            edges={riskyDemonOvers}
             isLoading={isLoading}
-            emptyTitle="No streak-based lines found"
-            emptyDescription="Alternate/goblin lines will appear here when available"
+            emptyTitle="No demon risk lines found"
+            emptyDescription="Demon/plus-money adjusted overs will appear here"
           />
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-lg font-semibold mb-3">Best 5 {title} picks</h3>
+        <EdgesTable
+          edges={bestFivePicks}
+          isLoading={isLoading}
+          emptyTitle="No top picks found"
+          emptyDescription="Try reducing your filters"
+        />
       </div>
 
       <div>
