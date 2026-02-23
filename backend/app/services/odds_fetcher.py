@@ -17,6 +17,7 @@ import logging
 from datetime import date, datetime, timezone, timedelta
 from difflib import SequenceMatcher
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -94,6 +95,31 @@ MARKET_TO_STAT = {
 
 # Sportsbooks we care about
 TARGET_BOOKS = {"fanduel", "prizepicks", "underdog"}
+
+
+def _odds_upsert_conflict_kwargs(db: Session) -> dict:
+    """
+    Build ON CONFLICT target args for odds_lines upserts.
+
+    Some environments may still have the legacy unique constraint name,
+    while newer migrations use the *_line variant.
+    """
+    unique_constraints = {
+        c.get("name")
+        for c in inspect(db.bind).get_unique_constraints("odds_lines")
+        if c.get("name")
+    }
+
+    if "uq_odds_player_game_stat_book_line" in unique_constraints:
+        return {"constraint": "uq_odds_player_game_stat_book_line"}
+
+    if "uq_odds_player_game_stat_book" in unique_constraints:
+        return {"constraint": "uq_odds_player_game_stat_book"}
+
+    # Fallback for databases where constraints are unnamed but keys exist.
+    return {
+        "index_elements": ["player_id", "game_id", "stat_type", "sportsbook", "line"],
+    }
 
 
 # ── Name matching ─────────────────────────────────────────────────────────────
@@ -419,7 +445,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
         insert_stmt = pg_insert(OddsLine).values(rows)
         upsert_stmt = insert_stmt.on_conflict_do_update(
-            constraint="uq_odds_player_game_stat_book_line",
+            **_odds_upsert_conflict_kwargs(db),
             set_={
                 "line": insert_stmt.excluded.line,
                 "over_odds": insert_stmt.excluded.over_odds,
