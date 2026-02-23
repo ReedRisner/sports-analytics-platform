@@ -44,8 +44,10 @@ export function Header() {
     { path: '/edges', label: 'Edge Finder' },
     { path: '/players', label: 'Players' },
     { path: '/matchups', label: 'Matchups' },
+    { path: '/prizepicks', label: 'PrizePicks' },
+    { path: '/underdog', label: 'Underdog' },
     { path: '/pricing', label: 'Pricing' },
-     { path: '/accuracy', label: 'Accuracy' },
+    { path: '/accuracy', label: 'Accuracy' },
   ]
 
   return (
