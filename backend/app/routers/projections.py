@@ -26,6 +26,29 @@ router = APIRouter(prefix="/projections", tags=["projections"])
 logger = logging.getLogger(__name__)
 
 
+_TODAY_PROJECTIONS_CACHE: dict[str, dict] = {}
+_TODAY_PROJECTIONS_CACHE_TTL_SECONDS = 60
+
+
+def _get_cached_today_projections(cache_key: str):
+    cached = _TODAY_PROJECTIONS_CACHE.get(cache_key)
+    if not cached:
+        return None
+
+    if (time.time() - cached["created_at"]) > _TODAY_PROJECTIONS_CACHE_TTL_SECONDS:
+        _TODAY_PROJECTIONS_CACHE.pop(cache_key, None)
+        return None
+
+    return cached["payload"]
+
+
+def _set_cached_today_projections(cache_key: str, payload: dict):
+    _TODAY_PROJECTIONS_CACHE[cache_key] = {
+        "created_at": time.time(),
+        "payload": payload,
+    }
+
+
 def _process_single_projection(args):
     """Process a single player projection (runs in parallel thread)"""
     player_id, stat_type, opp_team_id = args
@@ -151,6 +174,12 @@ def today_projections(
     OPTIMIZED: Uses parallel processing for 5-10x speed boost.
     """
     start = time.time()
+
+    cache_key = f"{stat_type}:{min_projected}:{(position or '').upper()}"
+    cached_payload = _get_cached_today_projections(cache_key)
+    if cached_payload is not None:
+        logger.info("Today projections cache hit for key=%s", cache_key)
+        return cached_payload
     
     if stat_type not in STAT_CONFIG:
         raise HTTPException(
@@ -164,6 +193,24 @@ def today_projections(
 
     games = db.query(Game).filter(Game.date == game_date).all()
 
+    team_ids_today = {
+        team_id
+        for game in games
+        for team_id in (game.home_team_id, game.away_team_id)
+    }
+
+    players_query = db.query(Player).filter(
+        Player.team_id.in_(team_ids_today),
+        Player.is_active == True,
+    )
+    if position:
+        players_query = players_query.filter(Player.position == position.upper())
+
+    players = players_query.all()
+    players_by_team: dict[int, list[Player]] = {}
+    for player in players:
+        players_by_team.setdefault(player.team_id, []).append(player)
+
     # Prepare tasks for parallel processing
     tasks = []
     for game in games:
@@ -171,23 +218,12 @@ def today_projections(
             (game.home_team_id, game.away_team_id),
             (game.away_team_id, game.home_team_id),
         ]:
-            if position:
-                players = db.query(Player).filter(
-                    Player.team_id == team_id,
-                    Player.is_active == True,
-                    Player.position == position.upper(),
-                ).all()
-            else:
-                players = db.query(Player).filter(
-                    Player.team_id == team_id,
-                    Player.is_active == True,
-                ).all()
-
-            for player in players:
+            for player in players_by_team.get(team_id, []):
                 tasks.append((player.id, stat_type, opp_id))
 
     # Process all projections in PARALLEL (5-10x faster!)
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    max_workers = max(2, min(12, len(tasks)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         raw_results = list(executor.map(_process_single_projection, tasks))
     
     # Filter and convert results
@@ -201,12 +237,15 @@ def today_projections(
     elapsed = time.time() - start
     logger.info(f"Projections completed in {elapsed:.2f}s ({len(results)} projections)")
     
-    return {
+    payload = {
         "date":        str(game_date),
         "stat_type":   stat_type,
         "count":       len(results),
         "projections": results,
     }
+
+    _set_cached_today_projections(cache_key, payload)
+    return payload
 
 
 # ── GET /projections/edge-finder ──────────────────────────────────────────────

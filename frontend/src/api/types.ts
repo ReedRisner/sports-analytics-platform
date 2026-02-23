@@ -135,6 +135,7 @@ export interface Edge {
   no_vig_fair_over?: number   // Fair odds probability for OVER (no vig)
   no_vig_fair_under?: number  // Fair odds probability for UNDER (no vig)
   vig_percent?: number        // Sportsbook vig/juice percentage
+  injury_factor?: number
   streak?: {
     current_streak: number
     streak_type: 'hit' | 'miss'
