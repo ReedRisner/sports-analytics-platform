@@ -7,8 +7,8 @@ export default function UnderdogPage() {
       sportsbook="underdog"
       description="Best Underdog Fantasy lines to take, including adjusted alternate lines and streak-driven opportunities."
       notes={[
-        'Selections with non-default multipliers (not x1) are included in alternate markets.',
-        'Adjusted lines can surface additional over/under streak value when standard lines are thin.',
+        'Adjusted Underdog lines from alternate multipliers are included in full.',
+        'Adjusted Underdog lines are OVER-only recommendations: lower lines are goblins (sorted by longest streaks) and higher lines are demons.',
       ]}
     />
   )

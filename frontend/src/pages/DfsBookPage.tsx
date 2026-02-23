@@ -13,6 +13,8 @@ interface DfsBookPageProps {
 
 type LineTypeFilter = 'all' | 'goblin' | 'demon' | 'normal'
 
+type BaselineMap = Map<string, number>
+
 function getRecommendedProbability(edge: Edge): number {
   return edge.recommendation === 'OVER' ? edge.over_prob : edge.under_prob
 }
@@ -30,19 +32,39 @@ function getStreakLength(edge: Edge): number {
   return edge.streak?.current_streak ?? 0
 }
 
-function classifyLineType(edge: Edge): Exclude<LineTypeFilter, 'all'> {
-  const recOdds = getRecommendedOdds(edge)
+function getBaselineKey(edge: Edge): string {
+  return `${edge.player_id}-${edge.stat_type}`
+}
 
-  // DFS books: plus-money adjusted lines are higher-risk demon style.
-  if (recOdds >= 100) {
-    return 'demon'
-  }
+function buildNormalLineMap(edges: Edge[]): BaselineMap {
+  const map: BaselineMap = new Map()
+  const baselineScoreByKey = new Map<string, number>()
 
-  // Favor "safe" lower adjusted lines as goblins.
-  if (recOdds <= -130) {
-    return 'goblin'
-  }
+  edges.forEach((edge) => {
+    const key = getBaselineKey(edge)
+    const recOdds = Math.abs(getRecommendedOdds(edge) || 0)
+    const oddsDistanceFromStandard = Math.abs(recOdds - 119)
+    if (!map.has(key)) {
+      map.set(key, edge.line)
+      baselineScoreByKey.set(key, oddsDistanceFromStandard)
+      return
+    }
 
+    const currentDistance = baselineScoreByKey.get(key) ?? Number.POSITIVE_INFINITY
+    if (oddsDistanceFromStandard < currentDistance) {
+      map.set(key, edge.line)
+      baselineScoreByKey.set(key, oddsDistanceFromStandard)
+    }
+  })
+
+  return map
+}
+
+function classifyLineType(edge: Edge, normalLineMap: BaselineMap): Exclude<LineTypeFilter, 'all'> {
+  const normalLine = normalLineMap.get(getBaselineKey(edge))
+  if (normalLine === undefined) return 'normal'
+  if (edge.line < normalLine) return 'goblin'
+  if (edge.line > normalLine) return 'demon'
   return 'normal'
 }
 
@@ -96,20 +118,33 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
   )
 
   const allEdges = edges || []
+  const normalLineMap = useMemo(() => buildNormalLineMap(allEdges), [allEdges])
+
+  const overOnlyAdjustedEdges = useMemo(
+    () => allEdges.filter((edge) => {
+      const lineType = classifyLineType(edge, normalLineMap)
+      return lineType === 'normal' || edge.recommendation === 'OVER'
+    }),
+    [allEdges, normalLineMap]
+  )
 
   const filteredEdges = useMemo(() => {
-    if (lineType === 'all') return allEdges
-    return allEdges.filter((edge) => classifyLineType(edge) === lineType)
-  }, [allEdges, lineType])
+    if (lineType === 'all') return overOnlyAdjustedEdges
+    return overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === lineType)
+  }, [lineType, normalLineMap, overOnlyAdjustedEdges])
 
   const safeGoblinStreaks = useMemo(
-    () => sortBySafestGoblin(allEdges.filter((edge) => classifyLineType(edge) === 'goblin')).slice(0, 8),
-    [allEdges]
+    () => sortBySafestGoblin(
+      overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'goblin' && edge.recommendation === 'OVER')
+    ).slice(0, 8),
+    [normalLineMap, overOnlyAdjustedEdges]
   )
 
   const riskyDemonOvers = useMemo(
-    () => sortByRiskyDemonOver(allEdges.filter((edge) => classifyLineType(edge) === 'demon' && edge.recommendation === 'OVER')).slice(0, 8),
-    [allEdges]
+    () => sortByRiskyDemonOver(
+      overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'demon' && edge.recommendation === 'OVER')
+    ).slice(0, 8),
+    [normalLineMap, overOnlyAdjustedEdges]
   )
 
   const bestFivePicks = useMemo(() => sortByBestFive(filteredEdges).slice(0, 5), [filteredEdges])

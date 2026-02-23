@@ -335,8 +335,8 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     bookmakers = data.get("bookmakers", [])
 
     # De-duplicate player prop writes within one API payload to avoid
-    # unique-key collisions on (player_id, game_id, stat_type, sportsbook).
-    pending_rows: dict[tuple[int, int, str, str], dict] = {}
+    # unique-key collisions on (player_id, game_id, stat_type, sportsbook, line).
+    pending_rows: dict[tuple[int, int, str, str, float], dict] = {}
 
     for book in bookmakers:
         book_key = book.get("key", "")
@@ -355,12 +355,10 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 continue
 
             outcomes = market.get("outcomes", [])
-            is_alternate_market = market_key.endswith("_alternate")
 
-            # Build dict: player_name → line data for this market
-            # For alternate markets a player can have multiple adjusted points;
-            # keep the first adjusted point we encounter for deterministic parsing.
-            player_lines: dict[str, dict] = {}
+            # Build dict: (player_name, line) -> line data for this market.
+            # This preserves all alternate adjusted lines for DFS books.
+            player_lines: dict[tuple[str, float], dict] = {}
             for outcome in outcomes:
                 name = outcome.get("description", "")  # player name
                 side = outcome.get("name", "")         # "Over" or "Under"
@@ -370,23 +368,20 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 if not name or point is None:
                     continue
 
-                if name not in player_lines:
-                    player_lines[name] = {
-                        "point": point,
+                line_key = (name, float(point))
+                if line_key not in player_lines:
+                    player_lines[line_key] = {
+                        "point": float(point),
                         "over_odds": None,
                         "under_odds": None,
                     }
 
-                # Skip outcomes for a different adjusted point once we started one.
-                if player_lines[name]["point"] != point:
-                    continue
-
                 if side == "Over":
-                    player_lines[name]["over_odds"] = price
+                    player_lines[line_key]["over_odds"] = price
                 elif side == "Under":
-                    player_lines[name]["under_odds"] = price
+                    player_lines[line_key]["under_odds"] = price
 
-            for odds_name, line_data in player_lines.items():
+            for (odds_name, _line_point), line_data in player_lines.items():
                 player = _find_player(db, odds_name)
                 if not player:
                     continue
@@ -404,39 +399,27 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 if under_odds is None:
                     under_odds = -119
 
-                row_key = (player.id, game.id, stat_type, book_key)
-
-                # Priority rules when both normal + alternate exist for same unique row:
-                # - FanDuel: keep normal market first (site-wide default source).
-                # - PrizePicks/Underdog: keep alternate market first (DFS adjusted focus).
-                priority = 2 if (book_key == "fanduel" and not is_alternate_market) or (book_key in {"prizepicks", "underdog"} and is_alternate_market) else 1
-
-                existing = pending_rows.get(row_key)
-                if existing and existing.get("priority", 0) > priority:
-                    continue
+                row_key = (player.id, game.id, stat_type, book_key, float(line))
 
                 pending_rows[row_key] = {
                     "player_id": player.id,
                     "game_id": game.id,
                     "stat_type": stat_type,
                     "sportsbook": book_key,
-                    "line": line,
+                    "line": float(line),
                     "over_odds": over_odds,
                     "under_odds": under_odds,
                     "fetched_at": datetime.now(timezone.utc),
-                    "priority": priority,
                 }
 
     if pending_rows:
         rows = []
         for row in pending_rows.values():
-            clean = dict(row)
-            clean.pop("priority", None)
-            rows.append(clean)
+            rows.append(dict(row))
 
         insert_stmt = pg_insert(OddsLine).values(rows)
         upsert_stmt = insert_stmt.on_conflict_do_update(
-            constraint="uq_odds_player_game_stat_book",
+            constraint="uq_odds_player_game_stat_book_line",
             set_={
                 "line": insert_stmt.excluded.line,
                 "over_odds": insert_stmt.excluded.over_odds,

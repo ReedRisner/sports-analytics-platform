@@ -174,8 +174,8 @@ class PlayerGameStats(Base):
 class OddsLine(Base):
     """
     Stores sportsbook prop lines fetched from the Odds API.
-    One row per player + game + stat_type + sportsbook.
-    Upserted on each fetch — always reflects the latest line.
+    One row per player + game + stat_type + sportsbook + line.
+    Upserted on each fetch — supports alternate adjusted lines per book.
     """
     __tablename__ = "odds_lines"
 
@@ -199,10 +199,10 @@ class OddsLine(Base):
     # When this line was fetched
     fetched_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Prevent duplicate rows for same player/game/stat/book
+    # Prevent duplicate rows for same player/game/stat/book/line
     __table_args__ = (
-        UniqueConstraint("player_id", "game_id", "stat_type", "sportsbook",
-                         name="uq_odds_player_game_stat_book"),
+        UniqueConstraint("player_id", "game_id", "stat_type", "sportsbook", "line",
+                         name="uq_odds_player_game_stat_book_line"),
     )
 
     player = relationship("Player", back_populates="odds")
