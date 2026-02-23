@@ -45,7 +45,6 @@ export function Header() {
     { path: '/players', label: 'Players' },
     { path: '/matchups', label: 'Matchups' },
     { path: '/prizepicks', label: 'PrizePicks' },
-    { path: '/underdog', label: 'Underdog' },
     { path: '/pricing', label: 'Pricing' },
     { path: '/accuracy', label: 'Accuracy' },
   ]

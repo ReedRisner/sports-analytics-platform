@@ -14,6 +14,7 @@ interface EdgesTableProps {
   sortField?: SortField
   sortDirection?: SortDirection
   onSort?: (field: SortField) => void
+  getLineTypeLabel?: (edge: Edge) => string | null
 }
 
 type SortField = 'player' | 'matchup' | 'stat' | 'line' | 'projected' | 'edge' | 'no_vig' | 'streak' | 'prob' | 'recommendation'
@@ -40,6 +41,7 @@ export function EdgesTable({
   sortField: controlledSortField,
   sortDirection: controlledSortDirection,
   onSort,
+  getLineTypeLabel,
 }: EdgesTableProps) {
   const navigate = useNavigate()
   const [internalSortField, setInternalSortField] = useState<SortField>('edge')
@@ -201,7 +203,14 @@ export function EdgesTable({
                   )}
                 </td>
                 <td className="p-4">
-                  <StatBadge statType={edge.stat_type} />
+                  <div className="space-y-1">
+                    <StatBadge statType={edge.stat_type} />
+                    {getLineTypeLabel && getLineTypeLabel(edge) ? (
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        {getLineTypeLabel(edge)}
+                      </div>
+                    ) : null}
+                  </div>
                 </td>
                 <td className="p-4 text-center font-mono">
                   {edge.line.toFixed(1)}

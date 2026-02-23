@@ -11,7 +11,7 @@ interface DfsBookPageProps {
   notes?: string[]
 }
 
-type LineTypeFilter = 'all' | 'goblin' | 'demon' | 'normal'
+type LineTypeFilter = 'all' | 'goblin' | 'demon'
 
 type BaselineMap = Map<string, number>
 
@@ -60,12 +60,10 @@ function buildNormalLineMap(edges: Edge[]): BaselineMap {
   return map
 }
 
-function classifyLineType(edge: Edge, normalLineMap: BaselineMap): Exclude<LineTypeFilter, 'all'> {
+function classifyLineType(edge: Edge, normalLineMap: BaselineMap): 'goblin' | 'demon' {
   const normalLine = normalLineMap.get(getBaselineKey(edge))
-  if (normalLine === undefined) return 'normal'
-  if (edge.line < normalLine) return 'goblin'
-  if (edge.line > normalLine) return 'demon'
-  return 'normal'
+  if (normalLine === undefined) return 'goblin'
+  return edge.line <= normalLine ? 'goblin' : 'demon'
 }
 
 function sortBySafestGoblin(edges: Edge[]): Edge[] {
@@ -121,11 +119,8 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
   const normalLineMap = useMemo(() => buildNormalLineMap(allEdges), [allEdges])
 
   const overOnlyAdjustedEdges = useMemo(
-    () => allEdges.filter((edge) => {
-      const lineType = classifyLineType(edge, normalLineMap)
-      return lineType === 'normal' || edge.recommendation === 'OVER'
-    }),
-    [allEdges, normalLineMap]
+    () => allEdges.filter((edge) => edge.recommendation === 'OVER'),
+    [allEdges]
   )
 
   const filteredEdges = useMemo(() => {
@@ -232,10 +227,9 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
               onChange={(e) => setLineType(e.target.value as LineTypeFilter)}
               className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
             >
-              <option value="all">All Lines</option>
+              <option value="all">All Adjusted Lines</option>
               <option value="goblin">Goblin / Safe Adjusted</option>
               <option value="demon">Demon / Risk Adjusted</option>
-              <option value="normal">Normal Lines</option>
             </select>
           </div>
 
@@ -271,6 +265,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
             isLoading={isLoading}
             emptyTitle="No goblin-safe streaks found"
             emptyDescription="Try lowering minimum edge or check when more adjusted lines are posted"
+            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
           />
         </div>
         <div>
@@ -280,6 +275,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
             isLoading={isLoading}
             emptyTitle="No demon risk lines found"
             emptyDescription="Demon/plus-money adjusted overs will appear here"
+            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
           />
         </div>
       </div>
@@ -291,6 +287,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
           isLoading={isLoading}
           emptyTitle="No top picks found"
           emptyDescription="Try reducing your filters"
+          getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
         />
       </div>
 
@@ -301,6 +298,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
           isLoading={isLoading}
           emptyTitle="No lines found"
           emptyDescription="Try reducing your filters"
+          getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
         />
       </div>
     </div>
