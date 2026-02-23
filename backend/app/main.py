@@ -51,6 +51,8 @@ RUN_SCHEMA_COMPAT = _get_bool("RUN_SCHEMA_COMPAT", default=not IS_PROD)
 # ── Scheduler ────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone=pytz.utc)
 
+NIGHTLY_JOB_TIMEZONE = pytz.timezone("America/New_York")
+
 def run_nightly_update():
     """Runs the incremental NBA stats update in its own DB session."""
     logger.info("Nightly NBA stats update starting...")
@@ -60,12 +62,38 @@ def run_nightly_update():
     except Exception as e:
         logger.exception(f"Nightly NBA stats update failed: {e}")
 
-# 03:00 PST = 11:00 UTC  — nightly stats update
+
+def run_nightly_odds_update():
+    """Fetches latest NBA odds after the stats refresh completes."""
+    logger.info("Nightly NBA odds update starting...")
+    try:
+        from app.services.odds_fetcher import fetch_todays_odds
+
+        result = fetch_todays_odds()
+        logger.info(
+            "Nightly NBA odds update complete — games=%s player_lines=%s game_lines=%s errors=%s",
+            result.get("games_processed", 0),
+            result.get("lines_saved", 0),
+            result.get("game_lines_saved", 0),
+            len(result.get("errors", [])),
+        )
+    except Exception as e:
+        logger.exception(f"Nightly NBA odds update failed: {e}")
+
+
+def run_nightly_pipeline():
+    """Runs the full nightly pipeline: stats refresh first, then odds."""
+    logger.info("Nightly pipeline starting (stats + odds)...")
+    run_nightly_update()
+    run_nightly_odds_update()
+    logger.info("Nightly pipeline finished")
+
+# 05:00 ET daily — full nightly refresh (stats + projections + odds)
 scheduler.add_job(
-    run_nightly_update,
-    CronTrigger(hour=11, minute=0, timezone="UTC"),
-    id="nba_nightly_update",
-    name="NBA stats nightly update — 3am PST",
+    run_nightly_pipeline,
+    CronTrigger(hour=5, minute=0, timezone=NIGHTLY_JOB_TIMEZONE),
+    id="nba_nightly_pipeline",
+    name="NBA nightly pipeline — 5am ET",
     replace_existing=True,
 )
 
@@ -93,7 +121,7 @@ async def lifespan(app: FastAPI):
         logger.info("Schema compatibility step skipped (RUN_SCHEMA_COMPAT=false)")
 
     scheduler.start()
-    logger.info("APScheduler started — odds API fetches are manual-only")
+    logger.info("APScheduler started — nightly pipeline scheduled for 5am ET")
 
     yield
 
