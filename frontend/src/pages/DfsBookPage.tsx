@@ -24,9 +24,6 @@ function getDisplayProbability(edge: Edge): number {
   return prob > 1 ? prob : prob * 100
 }
 
-function getRecommendedOdds(edge: Edge): number {
-  return edge.recommendation === 'OVER' ? (edge.over_odds ?? -119) : (edge.under_odds ?? -119)
-}
 
 function getStreakLength(edge: Edge): number {
   return edge.streak?.current_streak ?? 0
@@ -38,23 +35,19 @@ function getBaselineKey(edge: Edge): string {
 
 function buildNormalLineMap(edges: Edge[]): BaselineMap {
   const map: BaselineMap = new Map()
-  const baselineScoreByKey = new Map<string, number>()
+  const grouped: Record<string, number[]> = {}
 
   edges.forEach((edge) => {
     const key = getBaselineKey(edge)
-    const recOdds = Math.abs(getRecommendedOdds(edge) || 0)
-    const oddsDistanceFromStandard = Math.abs(recOdds - 119)
-    if (!map.has(key)) {
-      map.set(key, edge.line)
-      baselineScoreByKey.set(key, oddsDistanceFromStandard)
-      return
-    }
+    if (!grouped[key]) grouped[key] = []
+    grouped[key].push(edge.line)
+  })
 
-    const currentDistance = baselineScoreByKey.get(key) ?? Number.POSITIVE_INFINITY
-    if (oddsDistanceFromStandard < currentDistance) {
-      map.set(key, edge.line)
-      baselineScoreByKey.set(key, oddsDistanceFromStandard)
-    }
+  Object.entries(grouped).forEach(([key, lines]) => {
+    const sorted = [...lines].sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+    map.set(key, median)
   })
 
   return map
@@ -106,7 +99,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
   const [statType, setStatType] = useState<string>('')
   const [position, setPosition] = useState<string>('')
   const [lineType, setLineType] = useState<LineTypeFilter>('all')
-  const [minEdge, setMinEdge] = useState<number>(2)
+  const [minEdge, setMinEdge] = useState<number>(0)
 
   const { data: edges, isLoading, error } = useEdgeFinder(
     statType || undefined,

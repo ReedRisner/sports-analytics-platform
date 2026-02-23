@@ -2,10 +2,8 @@ import { useState } from 'react'
 import { useEdgeFinder } from '@/hooks/useEdgeFinder'
 import { EdgesTable } from '@/components/tables/EdgesTable'
 import { STAT_TYPES, POSITIONS } from '@/lib/constants'
-import { Filter, SortAsc, SortDesc } from 'lucide-react'
+import { Filter } from 'lucide-react'
 
-type SortField = 'player' | 'matchup' | 'stat' | 'line' | 'projected' | 'edge' | 'no_vig' | 'streak' | 'prob' | 'recommendation'
-type SortDirection = 'asc' | 'desc'
 
 /**
  * Edge Finder - Filterable table of all edges
@@ -16,9 +14,6 @@ export default function EdgeFinder() {
   const [minEdge, setMinEdge] = useState<number>(3.0)
   const [position, setPosition] = useState<string>('')
   
-  // Sorting
-  const [sortField, setSortField] = useState<SortField>('edge')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
   const { data: edges, isLoading, error } = useEdgeFinder(
     statType || undefined,
@@ -29,17 +24,6 @@ export default function EdgeFinder() {
 
   const processedEdges = edges || []
 
-
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      // Toggle direction
-      setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc')
-    } else {
-      // New field, default to descending
-      setSortField(field)
-      setSortDirection('desc')
-    }
-  }
 
   const clearFilters = () => {
     setStatType('')
@@ -131,88 +115,6 @@ export default function EdgeFinder() {
             >
               Clear all filters
             </button>
-          </div>
-        )}
-      </div>
-
-      {/* Sorting Controls */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <span className="text-sm font-medium">Sort by:</span>
-
-        <button
-          onClick={() => handleSort('edge')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'edge'
-              ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <span className="text-sm">Edge %</span>
-          {sortField === 'edge' && (
-            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
-          )}
-        </button>
-
-        <button
-          onClick={() => handleSort('projected')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'projected'
-              ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <span className="text-sm">Projection</span>
-          {sortField === 'projected' && (
-            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
-          )}
-        </button>
-
-        <button
-          onClick={() => handleSort('streak')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'streak'
-              ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <span className="text-sm">🔥 Streak</span>
-          {sortField === 'streak' && (
-            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
-          )}
-        </button>
-
-        <button
-          onClick={() => handleSort('prob')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'prob'
-              ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <span className="text-sm">Win %</span>
-          {sortField === 'prob' && (
-            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
-          )}
-        </button>
-
-        <button
-          onClick={() => handleSort('no_vig')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'no_vig'
-              ? 'border-primary bg-primary/10 text-primary'
-              : 'border-border hover:border-primary/50'
-          }`}
-        >
-          <span className="text-sm">⚖️ No-Vig</span>
-          {sortField === 'no_vig' && (
-            sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
-          )}
-        </button>
-
-        {isLoading && (
-          <div className="flex items-center gap-2 ml-auto">
-            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-muted-foreground">Updating...</span>
           </div>
         )}
       </div>
