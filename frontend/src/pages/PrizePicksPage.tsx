@@ -7,8 +7,8 @@ export default function PrizePicksPage() {
       sportsbook="prizepicks"
       description="Best PrizePicks lines, streak-based props, and top-value picks from today's board."
       notes={[
-        'Demons and goblins are included under alternate markets (e.g. player_points_alternate).',
-        'Goblins are treated as default odds lines, while demons are normalized to even odds (+100).',
+        'Demons and goblins are pulled from adjusted alternate markets.',
+        'Adjusted PrizePicks lines are OVER-only recommendations: goblins are below the standard line and demons are above it.',
       ]}
     />
   )
