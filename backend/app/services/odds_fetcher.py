@@ -17,6 +17,8 @@ import logging
 from datetime import date, datetime, timezone, timedelta
 from difflib import SequenceMatcher
 
+from sqlalchemy import inspect
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -30,8 +32,8 @@ logger = logging.getLogger(__name__)
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
 # Keep NBA sport for events/game matching.
 SPORT           = "basketball_nba"
-# FanDuel stays primary for site-wide edges; include DFS books for dedicated pages.
-BOOKMAKERS      = "fanduel,prizepicks,underdog"
+# FanDuel stays primary for site-wide edges; include PrizePicks for DFS-specific pages.
+BOOKMAKERS      = "fanduel,prizepicks"
 ODDS_FORMAT     = "american"
 
 # Markets to pull — each adds ~1 credit per event
@@ -93,7 +95,56 @@ MARKET_TO_STAT = {
 }
 
 # Sportsbooks we care about
-TARGET_BOOKS = {"fanduel", "prizepicks", "underdog"}
+TARGET_BOOKS = {"fanduel", "prizepicks"}
+
+
+def _odds_upsert_conflict_config(db: Session) -> tuple[dict, tuple[str, ...]]:
+    """
+    Build ON CONFLICT args and de-duplication keys for odds_lines upserts.
+
+    Returns:
+      - kwargs for SQLAlchemy on_conflict_do_update(...)
+      - field names that define uniqueness for the active schema
+    """
+    unique_constraints = {
+        c.get("name")
+        for c in inspect(db.bind).get_unique_constraints("odds_lines")
+        if c.get("name")
+    }
+
+    if "uq_odds_player_game_stat_book_line" in unique_constraints:
+        return (
+            {"constraint": "uq_odds_player_game_stat_book_line"},
+            ("player_id", "game_id", "stat_type", "sportsbook", "line"),
+        )
+
+    if "uq_odds_player_game_stat_book" in unique_constraints:
+        return (
+            {"constraint": "uq_odds_player_game_stat_book"},
+            ("player_id", "game_id", "stat_type", "sportsbook"),
+        )
+
+    # Fallback for databases where constraints are unnamed but keys exist.
+    return (
+        {"index_elements": ["player_id", "game_id", "stat_type", "sportsbook", "line"]},
+        ("player_id", "game_id", "stat_type", "sportsbook", "line"),
+    )
+
+
+def _dedupe_rows(rows: list[dict], key_fields: tuple[str, ...]) -> list[dict]:
+    """Keep only the newest row per active unique key to prevent ON CONFLICT cardinality errors."""
+    deduped: dict[tuple, dict] = {}
+    for row in rows:
+        key = tuple(row.get(field) for field in key_fields)
+        deduped[key] = row
+    return list(deduped.values())
+
+
+def _compact_error_message(exc: Exception) -> str:
+    """Return a concise, user-readable error message without huge SQL payloads."""
+    if isinstance(exc, SQLAlchemyError) and getattr(exc, "orig", None) is not None:
+        return str(exc.orig)
+    return str(exc)
 
 
 # ── Name matching ─────────────────────────────────────────────────────────────
@@ -283,8 +334,9 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
         return summary
 
     except Exception as e:
-        logger.exception(f"Odds fetch failed: {e}")
-        summary["errors"].append(str(e))
+        compact_error = _compact_error_message(e)
+        logger.error("Odds fetch failed: %s", compact_error)
+        summary["errors"].append(compact_error)
         return summary
 
     finally:
@@ -347,6 +399,10 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
             market_key = market.get("key", "")
             stat_type = MARKET_TO_STAT.get(market_key)
             if not stat_type:
+                continue
+
+            # Keep FanDuel to primary markets only (no adjusted/alternate ladders).
+            if book_key == "fanduel" and market_key.endswith("_alternate"):
                 continue
 
             # Handle game lines (spread, total, moneyline) separately
@@ -413,13 +469,14 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 }
 
     if pending_rows:
-        rows = []
-        for row in pending_rows.values():
-            rows.append(dict(row))
+        rows = [dict(row) for row in pending_rows.values()]
+
+        conflict_kwargs, conflict_key_fields = _odds_upsert_conflict_config(db)
+        rows = _dedupe_rows(rows, conflict_key_fields)
 
         insert_stmt = pg_insert(OddsLine).values(rows)
         upsert_stmt = insert_stmt.on_conflict_do_update(
-            constraint="uq_odds_player_game_stat_book_line",
+            **conflict_kwargs,
             set_={
                 "line": insert_stmt.excluded.line,
                 "over_odds": insert_stmt.excluded.over_odds,
@@ -598,6 +655,8 @@ def _is_home_team(db: Session, game: Game, team_name: str) -> bool:
 # ── Standalone runner ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     print("Fetching today's NBA odds...")
     result = fetch_todays_odds()
     print(f"\nResult:")
