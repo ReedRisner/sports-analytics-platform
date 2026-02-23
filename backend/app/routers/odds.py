@@ -6,6 +6,7 @@ from typing import Optional
 from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import time
 
 from app.database import get_db, SessionLocal
 from app.models.player import Player, Team, Game, OddsLine
@@ -16,6 +17,29 @@ from app.services.schema_compat import ensure_projection_history_schema
 
 router = APIRouter(prefix="/odds", tags=["odds"])
 logger = logging.getLogger(__name__)
+
+
+_EDGE_FINDER_CACHE: dict[str, dict] = {}
+_EDGE_FINDER_CACHE_TTL_SECONDS = 75
+
+
+def _get_cached_edge_finder(cache_key: str):
+    cached = _EDGE_FINDER_CACHE.get(cache_key)
+    if not cached:
+        return None
+
+    if (time.time() - cached["created_at"]) > _EDGE_FINDER_CACHE_TTL_SECONDS:
+        _EDGE_FINDER_CACHE.pop(cache_key, None)
+        return None
+
+    return cached["payload"]
+
+
+def _set_cached_edge_finder(cache_key: str, payload: dict):
+    _EDGE_FINDER_CACHE[cache_key] = {
+        "created_at": time.time(),
+        "payload": payload,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -109,6 +133,7 @@ def _process_single_edge(args):
             "no_vig_fair_over": no_vig["fair_over_prob"],
             "no_vig_fair_under": no_vig["fair_under_prob"],
             "vig_percent": no_vig["vig_percent"],
+            "injury_factor": proj.injury_factor,
         }
         
     finally:
@@ -291,8 +316,13 @@ def edge_finder(
     Note: Defaults to FanDuel lines for consistency. Frontend always uses FanDuel.
     OPTIMIZED: Uses parallel processing for 5-10x faster first load!
     """
-    import time
     start = time.time()
+
+    cache_key = f"{stat_type or 'all'}:{sportsbook or 'all'}:{round(min_edge_pct, 2)}"
+    cached_payload = _get_cached_edge_finder(cache_key)
+    if cached_payload is not None:
+        logger.info("Edge finder cache hit for key=%s", cache_key)
+        return cached_payload
     
     # Ensure projection_history schema is ready before spinning parallel workers.
     ensure_projection_history_schema(db)
@@ -375,13 +405,16 @@ def edge_finder(
     elapsed = time.time() - start
     logger.info(f"Edge finder completed in {elapsed:.2f}s ({len(results)} edges found)")
 
-    return {
+    payload = {
         "date":       str(today),
         "stat_type":  stat_type or "all",
         "sportsbook": sportsbook or "all",
         "count":      len(results),
         "edges":      results,
     }
+
+    _set_cached_edge_finder(cache_key, payload)
+    return payload
 
 
 # ── GET /odds/player/{player_id} ─────────────────────────────────────────────

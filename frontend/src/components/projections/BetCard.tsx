@@ -171,6 +171,17 @@ export function BetCard({ edge, rank }: BetCardProps) {
         </div>
       )}
 
+      {edge.injury_factor !== undefined && edge.injury_factor !== 1 && (
+        <div className="pt-2 border-t border-border/50 mt-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">Injury Adjustment</span>
+            <span className="font-semibold font-mono text-amber-300">
+              {edge.injury_factor.toFixed(2)}x
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Hover Effect Overlay */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/0 to-primary/0 group-hover:from-primary/5 group-hover:to-primary/10 transition-all duration-300 pointer-events-none rounded-xl" />
     </div>

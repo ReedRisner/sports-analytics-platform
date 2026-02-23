@@ -464,10 +464,6 @@ def calculate_injury_impact_factor(
 
     Returns: 1.0 if injury tracking unavailable, otherwise calculated boost
     """
-    if not INJURIES_AVAILABLE:
-        # Return neutral factor - no injury data available
-        return 1.0
-
     from app.models.player import Player, PlayerGameStats, Game, Team
 
     player = db.query(Player).filter(Player.id == player_id).first()
