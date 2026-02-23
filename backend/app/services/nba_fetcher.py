@@ -700,7 +700,7 @@ def fetch_schedule(season="2025-26"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NIGHTLY UPDATE — incremental refresh (run at 3am PST after games finish)
+# NIGHTLY UPDATE — incremental refresh (scheduled at 5am ET in app/main.py)
 # ─────────────────────────────────────────────────────────────────────────────
 def nightly_update(season="2025-26"):
     """
