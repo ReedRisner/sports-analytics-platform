@@ -4,7 +4,7 @@ import { EdgesTable } from '@/components/tables/EdgesTable'
 import { STAT_TYPES, POSITIONS } from '@/lib/constants'
 import { Filter, SortAsc, SortDesc } from 'lucide-react'
 
-type SortField = 'edge_pct' | 'projected' | 'line' | 'over_prob' | 'streak' | 'no_vig'
+type SortField = 'player' | 'matchup' | 'stat' | 'line' | 'projected' | 'edge' | 'no_vig' | 'streak' | 'prob' | 'recommendation'
 type SortDirection = 'asc' | 'desc'
 
 /**
@@ -17,7 +17,7 @@ export default function EdgeFinder() {
   const [position, setPosition] = useState<string>('')
   
   // Sorting
-  const [sortField, setSortField] = useState<SortField>('edge_pct')
+  const [sortField, setSortField] = useState<SortField>('edge')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
   const { data: edges, isLoading, error } = useEdgeFinder(
@@ -29,55 +29,6 @@ export default function EdgeFinder() {
 
   const processedEdges = edges || []
 
-  // Sort edges
-  const sortedEdges = processedEdges ? [...processedEdges].sort((a, b) => {
-    let aVal: number, bVal: number
-
-    switch (sortField) {
-      case 'edge_pct':
-        aVal = Math.abs(a.edge_pct)
-        bVal = Math.abs(b.edge_pct)
-        break
-      case 'projected':
-        aVal = a.projected
-        bVal = b.projected
-        break
-      case 'line':
-        aVal = a.line
-        bVal = b.line
-        break
-      case 'over_prob':
-        aVal = a.recommendation === 'OVER' ? a.over_prob : a.under_prob
-        bVal = b.recommendation === 'OVER' ? b.over_prob : b.under_prob
-        break
-      case 'streak': {
-        // Sort by streak length regardless of type, but always keep no-streak rows at the end.
-        const aStreak = a.streak?.current_streak ?? 0
-        const bStreak = b.streak?.current_streak ?? 0
-        const aHasStreak = aStreak > 0
-        const bHasStreak = bStreak > 0
-
-        if (aHasStreak !== bHasStreak) {
-          return aHasStreak ? -1 : 1
-        }
-
-        return sortDirection === 'desc' ? bStreak - aStreak : aStreak - bStreak
-      }
-      case 'no_vig':
-        // Sort by fair odds probability (for recommended side)
-        aVal = a.recommendation === 'OVER' 
-          ? (a.no_vig_fair_over || 0) 
-          : (a.no_vig_fair_under || 0)
-        bVal = b.recommendation === 'OVER' 
-          ? (b.no_vig_fair_over || 0) 
-          : (b.no_vig_fair_under || 0)
-        break
-      default:
-        return 0
-    }
-
-    return sortDirection === 'desc' ? bVal - aVal : aVal - bVal
-  }) : []
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -189,15 +140,15 @@ export default function EdgeFinder() {
         <span className="text-sm font-medium">Sort by:</span>
 
         <button
-          onClick={() => handleSort('edge_pct')}
+          onClick={() => handleSort('edge')}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'edge_pct'
+            sortField === 'edge'
               ? 'border-primary bg-primary/10 text-primary'
               : 'border-border hover:border-primary/50'
           }`}
         >
           <span className="text-sm">Edge %</span>
-          {sortField === 'edge_pct' && (
+          {sortField === 'edge' && (
             sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
           )}
         </button>
@@ -231,15 +182,15 @@ export default function EdgeFinder() {
         </button>
 
         <button
-          onClick={() => handleSort('over_prob')}
+          onClick={() => handleSort('prob')}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
-            sortField === 'over_prob'
+            sortField === 'prob'
               ? 'border-primary bg-primary/10 text-primary'
               : 'border-border hover:border-primary/50'
           }`}
         >
           <span className="text-sm">Win %</span>
-          {sortField === 'over_prob' && (
+          {sortField === 'prob' && (
             sortDirection === 'desc' ? <SortDesc className="w-4 h-4" /> : <SortAsc className="w-4 h-4" />
           )}
         </button>
@@ -267,9 +218,9 @@ export default function EdgeFinder() {
       </div>
 
       {/* Results Count */}
-      {!isLoading && sortedEdges && (
+      {!isLoading && processedEdges && (
         <div className="text-sm text-muted-foreground">
-          Showing {sortedEdges.length} edge{sortedEdges.length !== 1 ? 's' : ''}
+          Showing {processedEdges.length} edge{processedEdges.length !== 1 ? 's' : ''}
           {hasFilters && ' with current filters'}
         </div>
       )}
@@ -286,10 +237,13 @@ export default function EdgeFinder() {
 
       {/* Edges Table */}
       <EdgesTable
-        edges={sortedEdges}
+        edges={processedEdges}
         isLoading={isLoading}
         emptyTitle={'No edges found'}
         emptyDescription={'Try adjusting your filters or check back later'}
+        sortField={sortField}
+        sortDirection={sortDirection}
+        onSort={handleSort}
       />
     </div>
   )
