@@ -1,15 +1,15 @@
 # backend/app/services/odds_fetcher.py
 """
-Odds API fetcher — pulls NBA player prop lines and game lines, saves to DB.
+Odds API fetcher — pulls player prop lines and game lines, saves to DB.
 
 Enhanced to include:
   - Player props: points, rebounds, assists, steals, blocks, threes, PR, PA, RA, PRA
+  - Alternate markets for DFS books (includes adjusted demon/goblin-style lines)
   - Game lines: spread, total, moneyline
 
-Credit-efficient design for 500 credits/month:
+Credit-efficient design:
   - Checks today first, then up to 3 days ahead for upcoming games
   - Upserts into odds_lines table (no duplicates)
-  - Scheduled twice daily at midnight and noon PST (08:00 and 20:00 UTC)
 """
 
 import httpx
@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
+# Keep NBA sport for events/game matching.
 SPORT           = "basketball_nba"
-BOOKMAKERS      = "fanduel"
+# FanDuel stays primary for site-wide edges; include DFS books for dedicated pages.
+BOOKMAKERS      = "fanduel,prizepicks,underdog"
 ODDS_FORMAT     = "american"
 
 # Markets to pull — each adds ~1 credit per event
@@ -45,6 +47,17 @@ MARKETS = [
     "player_points_assists",
     "player_rebounds_assists",
     "player_points_rebounds_assists",
+    # Alternate markets (demons/goblins and adjusted multiplier lines)
+    "player_points_alternate",
+    "player_rebounds_alternate",
+    "player_assists_alternate",
+    "player_blocks_alternate",
+    "player_steals_alternate",
+    "player_threes_alternate",
+    "player_points_rebounds_alternate",
+    "player_points_assists_alternate",
+    "player_rebounds_assists_alternate",
+    "player_points_rebounds_assists_alternate",
     # Game lines
     "spreads",
     "totals",
@@ -63,6 +76,16 @@ MARKET_TO_STAT = {
     "player_points_assists": "pa",
     "player_rebounds_assists": "ra",
     "player_points_rebounds_assists": "pra",
+    "player_points_alternate": "points",
+    "player_rebounds_alternate": "rebounds",
+    "player_assists_alternate": "assists",
+    "player_blocks_alternate": "blocks",
+    "player_steals_alternate": "steals",
+    "player_threes_alternate": "threes",
+    "player_points_rebounds_alternate": "pr",
+    "player_points_assists_alternate": "pa",
+    "player_rebounds_assists_alternate": "ra",
+    "player_points_rebounds_assists_alternate": "pra",
     # Game lines (handled separately)
     "spreads": "spread",
     "totals": "total",
@@ -70,7 +93,7 @@ MARKET_TO_STAT = {
 }
 
 # Sportsbooks we care about
-TARGET_BOOKS = {"fanduel"}
+TARGET_BOOKS = {"fanduel", "prizepicks", "underdog"}
 
 
 # ── Name matching ─────────────────────────────────────────────────────────────
@@ -311,6 +334,10 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     game_lines_saved = 0
     bookmakers = data.get("bookmakers", [])
 
+    # De-duplicate player prop writes within one API payload to avoid
+    # unique-key collisions on (player_id, game_id, stat_type, sportsbook).
+    pending_rows: dict[tuple[int, int, str, str], dict] = {}
+
     for book in bookmakers:
         book_key = book.get("key", "")
         if book_key not in TARGET_BOOKS:
@@ -318,7 +345,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
         for market in book.get("markets", []):
             market_key = market.get("key", "")
-            stat_type  = MARKET_TO_STAT.get(market_key)
+            stat_type = MARKET_TO_STAT.get(market_key)
             if not stat_type:
                 continue
 
@@ -327,65 +354,98 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 game_lines_saved += _save_game_line(db, game, book_key, stat_type, market)
                 continue
 
-            # Handle player props
             outcomes = market.get("outcomes", [])
-            
-            # Build dict: player_name → {over_price, under_price, point}
+            is_alternate_market = market_key.endswith("_alternate")
+
+            # Build dict: player_name → line data for this market
+            # For alternate markets a player can have multiple adjusted points;
+            # keep the first adjusted point we encounter for deterministic parsing.
             player_lines: dict[str, dict] = {}
             for outcome in outcomes:
-                name   = outcome.get("description", "")   # player name
-                side   = outcome.get("name", "")           # "Over" or "Under"
-                point  = outcome.get("point")              # the line value
-                price  = outcome.get("price")              # American odds
+                name = outcome.get("description", "")  # player name
+                side = outcome.get("name", "")         # "Over" or "Under"
+                point = outcome.get("point")            # line value
+                price = outcome.get("price")            # American odds
 
                 if not name or point is None:
                     continue
 
                 if name not in player_lines:
-                    player_lines[name] = {"point": point}
+                    player_lines[name] = {
+                        "point": point,
+                        "over_odds": None,
+                        "under_odds": None,
+                    }
+
+                # Skip outcomes for a different adjusted point once we started one.
+                if player_lines[name]["point"] != point:
+                    continue
 
                 if side == "Over":
                     player_lines[name]["over_odds"] = price
                 elif side == "Under":
                     player_lines[name]["under_odds"] = price
 
-            # Match each player to our DB and upsert
             for odds_name, line_data in player_lines.items():
                 player = _find_player(db, odds_name)
                 if not player:
                     continue
 
-                line       = line_data.get("point")
-                over_odds  = line_data.get("over_odds")
+                line = line_data.get("point")
+                over_odds = line_data.get("over_odds")
                 under_odds = line_data.get("under_odds")
 
                 if line is None:
                     continue
 
-                # Upsert player prop line
-                existing = db.query(OddsLine).filter(
-                    OddsLine.player_id  == player.id,
-                    OddsLine.game_id    == game.id,
-                    OddsLine.stat_type  == stat_type,
-                    OddsLine.sportsbook == book_key,
-                ).first()
+                # DFS books sometimes omit prices on adjusted lines.
+                if over_odds is None:
+                    over_odds = -119
+                if under_odds is None:
+                    under_odds = -119
 
-                if existing:
-                    existing.line       = line
-                    existing.over_odds  = over_odds
-                    existing.under_odds = under_odds
-                    existing.fetched_at = datetime.now(timezone.utc)
-                else:
-                    db.add(OddsLine(
-                        player_id   = player.id,
-                        game_id     = game.id,
-                        stat_type   = stat_type,
-                        sportsbook  = book_key,
-                        line        = line,
-                        over_odds   = over_odds,
-                        under_odds  = under_odds,
-                    ))
-                player_lines_saved += 1
+                row_key = (player.id, game.id, stat_type, book_key)
+
+                # Priority rules when both normal + alternate exist for same unique row:
+                # - FanDuel: keep normal market first (site-wide default source).
+                # - PrizePicks/Underdog: keep alternate market first (DFS adjusted focus).
+                priority = 2 if (book_key == "fanduel" and not is_alternate_market) or (book_key in {"prizepicks", "underdog"} and is_alternate_market) else 1
+
+                existing = pending_rows.get(row_key)
+                if existing and existing.get("priority", 0) > priority:
+                    continue
+
+                pending_rows[row_key] = {
+                    "player_id": player.id,
+                    "game_id": game.id,
+                    "stat_type": stat_type,
+                    "sportsbook": book_key,
+                    "line": line,
+                    "over_odds": over_odds,
+                    "under_odds": under_odds,
+                    "fetched_at": datetime.now(timezone.utc),
+                    "priority": priority,
+                }
+
+    if pending_rows:
+        rows = []
+        for row in pending_rows.values():
+            clean = dict(row)
+            clean.pop("priority", None)
+            rows.append(clean)
+
+        insert_stmt = pg_insert(OddsLine).values(rows)
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_odds_player_game_stat_book",
+            set_={
+                "line": insert_stmt.excluded.line,
+                "over_odds": insert_stmt.excluded.over_odds,
+                "under_odds": insert_stmt.excluded.under_odds,
+                "fetched_at": insert_stmt.excluded.fetched_at,
+            },
+        )
+        db.execute(upsert_stmt)
+        player_lines_saved = len(rows)
 
     db.commit()
     return player_lines_saved, game_lines_saved
