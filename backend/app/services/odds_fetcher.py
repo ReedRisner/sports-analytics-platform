@@ -334,6 +334,10 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     game_lines_saved = 0
     bookmakers = data.get("bookmakers", [])
 
+    # De-duplicate player prop writes within one API payload to avoid
+    # unique-key collisions on (player_id, game_id, stat_type, sportsbook).
+    pending_rows: dict[tuple[int, int, str, str], dict] = {}
+
     for book in bookmakers:
         book_key = book.get("key", "")
         if book_key not in TARGET_BOOKS:
@@ -341,7 +345,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
         for market in book.get("markets", []):
             market_key = market.get("key", "")
-            stat_type  = MARKET_TO_STAT.get(market_key)
+            stat_type = MARKET_TO_STAT.get(market_key)
             if not stat_type:
                 continue
 
@@ -350,18 +354,17 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 game_lines_saved += _save_game_line(db, game, book_key, stat_type, market)
                 continue
 
-            # Handle player props
             outcomes = market.get("outcomes", [])
             is_alternate_market = market_key.endswith("_alternate")
 
             # Build dict: player_name → line data for this market
             # For alternate markets a player can have multiple adjusted points;
-            # keep the first complete pair we encounter for deterministic writes.
+            # keep the first adjusted point we encounter for deterministic parsing.
             player_lines: dict[str, dict] = {}
             for outcome in outcomes:
                 name = outcome.get("description", "")  # player name
                 side = outcome.get("name", "")         # "Over" or "Under"
-                point = outcome.get("point")            # the line value
+                point = outcome.get("point")            # line value
                 price = outcome.get("price")            # American odds
 
                 if not name or point is None:
@@ -372,7 +375,6 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                         "point": point,
                         "over_odds": None,
                         "under_odds": None,
-                        "is_alternate": is_alternate_market,
                     }
 
                 # Skip outcomes for a different adjusted point once we started one.
@@ -384,50 +386,66 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 elif side == "Under":
                     player_lines[name]["under_odds"] = price
 
-            # Match each player to our DB and upsert
             for odds_name, line_data in player_lines.items():
                 player = _find_player(db, odds_name)
                 if not player:
                     continue
 
-                line       = line_data.get("point")
-                over_odds  = line_data.get("over_odds")
+                line = line_data.get("point")
+                over_odds = line_data.get("over_odds")
                 under_odds = line_data.get("under_odds")
 
                 if line is None:
                     continue
 
                 # DFS books sometimes omit prices on adjusted lines.
-                # Use sensible defaults so lines still flow through edge-finder.
                 if over_odds is None:
                     over_odds = -119
                 if under_odds is None:
                     under_odds = -119
 
-                # Upsert player prop line
-                existing = db.query(OddsLine).filter(
-                    OddsLine.player_id  == player.id,
-                    OddsLine.game_id    == game.id,
-                    OddsLine.stat_type  == stat_type,
-                    OddsLine.sportsbook == book_key,
-                ).first()
+                row_key = (player.id, game.id, stat_type, book_key)
 
-                if existing:
-                    existing.line       = line
-                    existing.over_odds  = over_odds
-                    existing.under_odds = under_odds
-                    existing.fetched_at = datetime.now(timezone.utc)
-                else:
-                    db.add(OddsLine(
-                        player_id   = player.id,
-                        game_id     = game.id,
-                        stat_type   = stat_type,
-                        sportsbook  = book_key,
-                        line        = line,
-                        over_odds   = over_odds,
-                        under_odds  = under_odds,
-                    ))
-                player_lines_saved += 1
+                # Priority rules when both normal + alternate exist for same unique row:
+                # - FanDuel: keep normal market first (site-wide default source).
+                # - PrizePicks/Underdog: keep alternate market first (DFS adjusted focus).
+                priority = 2 if (book_key == "fanduel" and not is_alternate_market) or (book_key in {"prizepicks", "underdog"} and is_alternate_market) else 1
+
+                existing = pending_rows.get(row_key)
+                if existing and existing.get("priority", 0) > priority:
+                    continue
+
+                pending_rows[row_key] = {
+                    "player_id": player.id,
+                    "game_id": game.id,
+                    "stat_type": stat_type,
+                    "sportsbook": book_key,
+                    "line": line,
+                    "over_odds": over_odds,
+                    "under_odds": under_odds,
+                    "fetched_at": datetime.now(timezone.utc),
+                    "priority": priority,
+                }
+
+    if pending_rows:
+        rows = []
+        for row in pending_rows.values():
+            clean = dict(row)
+            clean.pop("priority", None)
+            rows.append(clean)
+
+        insert_stmt = pg_insert(OddsLine).values(rows)
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_odds_player_game_stat_book",
+            set_={
+                "line": insert_stmt.excluded.line,
+                "over_odds": insert_stmt.excluded.over_odds,
+                "under_odds": insert_stmt.excluded.under_odds,
+                "fetched_at": insert_stmt.excluded.fetched_at,
+            },
+        )
+        db.execute(upsert_stmt)
+        player_lines_saved = len(rows)
 
     db.commit()
     return player_lines_saved, game_lines_saved
