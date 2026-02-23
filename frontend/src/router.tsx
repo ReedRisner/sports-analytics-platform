@@ -11,6 +11,8 @@ const AuthPage = lazy(() => import('./pages/AuthPage'))
 const Pricing = lazy(() => import('./pages/Pricing'))
 const AccuracyPage = lazy(() => import('./pages/AccuracyPage'))
 const MatchupsPage = lazy(() => import('./pages/MatchupsPage'))
+const PrizePicksPage = lazy(() => import('./pages/PrizePicksPage'))
+const UnderdogPage = lazy(() => import('./pages/UnderdogPage'))
 
 // Loading fallback
 const LoadingFallback = () => (
@@ -34,6 +36,8 @@ export function AppRouter() {
           <Route path="/auth" element={<AuthPage />} />
           <Route path="/accuracy" element={<AccuracyPage />} />
           <Route path="/matchups" element={<MatchupsPage />} />
+          <Route path="/prizepicks" element={<PrizePicksPage />} />
+          <Route path="/underdog" element={<UnderdogPage />} />
 
         </Route>
       </Routes>

@@ -1,15 +1,15 @@
 # backend/app/services/odds_fetcher.py
 """
-Odds API fetcher — pulls NBA player prop lines and game lines, saves to DB.
+Odds API fetcher — pulls player prop lines and game lines, saves to DB.
 
 Enhanced to include:
   - Player props: points, rebounds, assists, steals, blocks, threes, PR, PA, RA, PRA
+  - Alternate markets for DFS books (includes adjusted demon/goblin-style lines)
   - Game lines: spread, total, moneyline
 
-Credit-efficient design for 500 credits/month:
+Credit-efficient design:
   - Checks today first, then up to 3 days ahead for upcoming games
   - Upserts into odds_lines table (no duplicates)
-  - Scheduled twice daily at midnight and noon PST (08:00 and 20:00 UTC)
 """
 
 import httpx
@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
+# Keep NBA sport for events/game matching.
 SPORT           = "basketball_nba"
-BOOKMAKERS      = "fanduel"
+# FanDuel stays primary for site-wide edges; include DFS books for dedicated pages.
+BOOKMAKERS      = "fanduel,prizepicks,underdog"
 ODDS_FORMAT     = "american"
 
 # Markets to pull — each adds ~1 credit per event
@@ -45,6 +47,17 @@ MARKETS = [
     "player_points_assists",
     "player_rebounds_assists",
     "player_points_rebounds_assists",
+    # Alternate markets (demons/goblins and adjusted multiplier lines)
+    "player_points_alternate",
+    "player_rebounds_alternate",
+    "player_assists_alternate",
+    "player_blocks_alternate",
+    "player_steals_alternate",
+    "player_threes_alternate",
+    "player_points_rebounds_alternate",
+    "player_points_assists_alternate",
+    "player_rebounds_assists_alternate",
+    "player_points_rebounds_assists_alternate",
     # Game lines
     "spreads",
     "totals",
@@ -63,6 +76,16 @@ MARKET_TO_STAT = {
     "player_points_assists": "pa",
     "player_rebounds_assists": "ra",
     "player_points_rebounds_assists": "pra",
+    "player_points_alternate": "points",
+    "player_rebounds_alternate": "rebounds",
+    "player_assists_alternate": "assists",
+    "player_blocks_alternate": "blocks",
+    "player_steals_alternate": "steals",
+    "player_threes_alternate": "threes",
+    "player_points_rebounds_alternate": "pr",
+    "player_points_assists_alternate": "pa",
+    "player_rebounds_assists_alternate": "ra",
+    "player_points_rebounds_assists_alternate": "pra",
     # Game lines (handled separately)
     "spreads": "spread",
     "totals": "total",
@@ -70,7 +93,7 @@ MARKET_TO_STAT = {
 }
 
 # Sportsbooks we care about
-TARGET_BOOKS = {"fanduel"}
+TARGET_BOOKS = {"fanduel", "prizepicks", "underdog"}
 
 
 # ── Name matching ─────────────────────────────────────────────────────────────
@@ -329,20 +352,32 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
             # Handle player props
             outcomes = market.get("outcomes", [])
-            
-            # Build dict: player_name → {over_price, under_price, point}
+            is_alternate_market = market_key.endswith("_alternate")
+
+            # Build dict: player_name → line data for this market
+            # For alternate markets a player can have multiple adjusted points;
+            # keep the first complete pair we encounter for deterministic writes.
             player_lines: dict[str, dict] = {}
             for outcome in outcomes:
-                name   = outcome.get("description", "")   # player name
-                side   = outcome.get("name", "")           # "Over" or "Under"
-                point  = outcome.get("point")              # the line value
-                price  = outcome.get("price")              # American odds
+                name = outcome.get("description", "")  # player name
+                side = outcome.get("name", "")         # "Over" or "Under"
+                point = outcome.get("point")            # the line value
+                price = outcome.get("price")            # American odds
 
                 if not name or point is None:
                     continue
 
                 if name not in player_lines:
-                    player_lines[name] = {"point": point}
+                    player_lines[name] = {
+                        "point": point,
+                        "over_odds": None,
+                        "under_odds": None,
+                        "is_alternate": is_alternate_market,
+                    }
+
+                # Skip outcomes for a different adjusted point once we started one.
+                if player_lines[name]["point"] != point:
+                    continue
 
                 if side == "Over":
                     player_lines[name]["over_odds"] = price
@@ -361,6 +396,13 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
                 if line is None:
                     continue
+
+                # DFS books sometimes omit prices on adjusted lines.
+                # Use sensible defaults so lines still flow through edge-finder.
+                if over_odds is None:
+                    over_odds = -119
+                if under_odds is None:
+                    under_odds = -119
 
                 # Upsert player prop line
                 existing = db.query(OddsLine).filter(
