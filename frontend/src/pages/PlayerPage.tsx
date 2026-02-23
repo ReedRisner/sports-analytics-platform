@@ -184,19 +184,6 @@ export default function PlayerPage() {
           </div>
         </div>
 
-        {projection.team_injuries && projection.team_injuries.length > 0 && (
-          <div className="mt-5 border-t border-border pt-4">
-            <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Teammates Injured</div>
-            <div className="flex flex-wrap gap-2">
-              {projection.team_injuries.map((injury: any) => (
-                <div key={`${injury.player_name}-${injury.status}`} className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs">
-                  <span className="font-medium text-foreground">{injury.player_name}</span>
-                  <span className="text-amber-300"> • {injury.status}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Stat Type Selector */}
@@ -817,10 +804,13 @@ export default function PlayerPage() {
                   style={{ fontSize: '12px' }}
                 />
                 <Tooltip 
+                  wrapperStyle={{ zIndex: 60 }}
                   contentStyle={{ 
-                    backgroundColor: 'hsl(var(--card))',
+                    backgroundColor: 'hsl(var(--background))',
                     border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px'
+                    borderRadius: '8px',
+                    opacity: 1,
+                    boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)'
                   }}
                   labelStyle={{ color: 'hsl(var(--foreground))' }}
                   content={({ active, payload }) => {
@@ -829,7 +819,7 @@ export default function PlayerPage() {
                     
                     if (data.isProjection) {
                       return (
-                        <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
+                        <div className="bg-background border border-border rounded-lg p-3 shadow-2xl">
                           <div className="font-semibold mb-2 text-primary">Next Game Projection</div>
                           <div className="space-y-1 text-sm">
                             <div className="flex items-center justify-between gap-4">
@@ -855,7 +845,7 @@ export default function PlayerPage() {
                     }
                     
                     return (
-                      <div className="bg-card border border-border rounded-lg p-3 shadow-lg">
+                      <div className="bg-background border border-border rounded-lg p-3 shadow-2xl">
                         <div className="font-semibold mb-2">{data.date}</div>
                         <div className="space-y-1 text-sm">
                           <div className="flex items-center justify-between gap-4">
