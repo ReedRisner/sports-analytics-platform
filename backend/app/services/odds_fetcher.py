@@ -401,6 +401,10 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
             if not stat_type:
                 continue
 
+            # Keep FanDuel to primary markets only (no adjusted/alternate ladders).
+            if book_key == "fanduel" and market_key.endswith("_alternate"):
+                continue
+
             # Handle game lines (spread, total, moneyline) separately
             if stat_type in ["spread", "total", "moneyline"]:
                 game_lines_saved += _save_game_line(db, game, book_key, stat_type, market)

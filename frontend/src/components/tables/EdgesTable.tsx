@@ -11,6 +11,9 @@ interface EdgesTableProps {
   isLoading?: boolean
   emptyTitle?: string
   emptyDescription?: string
+  sortField?: SortField
+  sortDirection?: SortDirection
+  onSort?: (field: SortField) => void
 }
 
 type SortField = 'player' | 'matchup' | 'stat' | 'line' | 'projected' | 'edge' | 'no_vig' | 'streak' | 'prob' | 'recommendation'
@@ -29,10 +32,21 @@ const getNoVigProbability = (edge: Edge) => {
 /**
  * Table displaying edges with sorting and click-to-view
  */
-export function EdgesTable({ edges, isLoading, emptyTitle = 'No edges found', emptyDescription = 'Try adjusting your filters or check back later' }: EdgesTableProps) {
+export function EdgesTable({
+  edges,
+  isLoading,
+  emptyTitle = 'No edges found',
+  emptyDescription = 'Try adjusting your filters or check back later',
+  sortField: controlledSortField,
+  sortDirection: controlledSortDirection,
+  onSort,
+}: EdgesTableProps) {
   const navigate = useNavigate()
-  const [sortField, setSortField] = useState<SortField>('edge')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [internalSortField, setInternalSortField] = useState<SortField>('edge')
+  const [internalSortDirection, setInternalSortDirection] = useState<SortDirection>('desc')
+
+  const sortField = controlledSortField ?? internalSortField
+  const sortDirection = controlledSortDirection ?? internalSortDirection
 
   const sortedEdges = useMemo(() => {
     const rows = [...edges]
@@ -96,13 +110,18 @@ export function EdgesTable({ edges, isLoading, emptyTitle = 'No edges found', em
   }, [edges, sortDirection, sortField])
 
   const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+    if (onSort) {
+      onSort(field)
       return
     }
 
-    setSortField(field)
-    setSortDirection(field === 'player' || field === 'matchup' || field === 'stat' || field === 'recommendation' ? 'asc' : 'desc')
+    if (sortField === field) {
+      setInternalSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+
+    setInternalSortField(field)
+    setInternalSortDirection(field === 'player' || field === 'matchup' || field === 'stat' || field === 'recommendation' ? 'asc' : 'desc')
   }
 
   const SortIcon = ({ field }: { field: SortField }) => {
