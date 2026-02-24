@@ -13,7 +13,7 @@ from app.models.player import Player, Team, Game, OddsLine
 from app.services.projection_engine import project_player, STAT_CONFIG
 from app.services.projection_saver import save_projection
 from app.services.streak_calculator import calculate_streak
-from app.services.schema_compat import ensure_projection_history_schema
+from app.services.schema_compat import ensure_projection_history_schema, ensure_odds_lines_schema
 
 router = APIRouter(prefix="/odds", tags=["odds"])
 logger = logging.getLogger(__name__)
@@ -111,6 +111,7 @@ def _process_single_edge(args):
             "stat_type": ol.stat_type,
             "sportsbook": ol.sportsbook,
             "line": ol.line,
+            "line_type": ol.line_type or "normal",
             "over_odds": ol.over_odds,
             "under_odds": ol.under_odds,
             "projected": proj.projected,
@@ -260,8 +261,9 @@ def todays_odds(
     All prop lines fetched for today's games.
     Shows raw lines without projections.
     """
-    # Ensure projection_history schema is ready before spinning parallel workers.
+    # Ensure schema compatibility before querying odds.
     ensure_projection_history_schema(db)
+    ensure_odds_lines_schema(db)
 
     today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
@@ -289,6 +291,7 @@ def todays_odds(
             "stat_type":   ol.stat_type,
             "sportsbook":  ol.sportsbook,
             "line":        ol.line,
+            "line_type":   ol.line_type or "normal",
             "over_odds":   ol.over_odds,
             "under_odds":  ol.under_odds,
             "fetched_at":  ol.fetched_at.isoformat() if ol.fetched_at else None,
@@ -324,8 +327,9 @@ def edge_finder(
         logger.info("Edge finder cache hit for key=%s", cache_key)
         return cached_payload
     
-    # Ensure projection_history schema is ready before spinning parallel workers.
+    # Ensure schema compatibility before querying odds.
     ensure_projection_history_schema(db)
+    ensure_odds_lines_schema(db)
 
     today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
@@ -431,8 +435,9 @@ def player_odds(
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    # Ensure projection_history schema is ready before spinning parallel workers.
+    # Ensure schema compatibility before querying odds.
     ensure_projection_history_schema(db)
+    ensure_odds_lines_schema(db)
 
     today = _nearest_game_date(db)
     games = db.query(Game).filter(Game.date == today).all()
