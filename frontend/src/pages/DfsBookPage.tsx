@@ -54,6 +54,10 @@ function buildNormalLineMap(edges: Edge[]): BaselineMap {
 }
 
 function classifyLineType(edge: Edge, normalLineMap: BaselineMap): 'normal' | 'goblin' | 'demon' {
+  if (edge.line_type === 'normal' || edge.line_type === 'goblin' || edge.line_type === 'demon') {
+    return edge.line_type
+  }
+
   const normalLine = normalLineMap.get(getBaselineKey(edge))
   if (normalLine === undefined) return 'normal'
 

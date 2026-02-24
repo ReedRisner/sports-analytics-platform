@@ -12,7 +12,7 @@ export function useEdgeFinder(
 ) {
   return useQuery({
     queryKey: ['edges', statType, sportsbook, minEdgePct, position],
-    queryFn: () => oddsAPI.getEdgeFinder(statType, sportsbook, minEdgePct, position),
+    queryFn: () => oddsAPI.getEdgeFinder(statType, sportsbook || "fanduel", minEdgePct, position),
     refetchInterval: 180000, // Refetch every 3 minutes
     staleTime: 180000, // Consider data stale after 3 minutes
   })

@@ -192,6 +192,9 @@ class OddsLine(Base):
     # The over/under line value (e.g. 27.5)
     line        = Column(Float, nullable=False)
 
+    # PrizePicks line family: normal | goblin | demon
+    line_type   = Column(String(20), nullable=False, default='normal')
+
     # Over/under odds in American format (e.g. -110)
     over_odds   = Column(Integer)
     under_odds  = Column(Integer)
