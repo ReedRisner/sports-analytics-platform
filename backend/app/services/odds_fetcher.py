@@ -426,6 +426,20 @@ def _find_game(db: Session, home_team: str, away_team: str, game_date: date | No
     return None
 
 
+def _classify_prizepicks_line_type(market_key: str, line: float, normal_line: float | None) -> str:
+    """Classify PrizePicks line as normal/goblin/demon."""
+    if not market_key.endswith("_alternate"):
+        return "normal"
+
+    if normal_line is None:
+        # If baseline line is missing, keep adjusted line neutral instead of guessing.
+        return "normal"
+
+    if abs(line - normal_line) < 0.001:
+        return "normal"
+    return "goblin" if line < normal_line else "demon"
+
+
 def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     """
     Parse the Odds API event-odds response and upsert into odds_lines.
@@ -438,6 +452,27 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
     # De-duplicate player prop writes within one API payload to avoid
     # unique-key collisions on (player_id, game_id, stat_type, sportsbook, line).
     pending_rows: dict[tuple[int, int, str, str, float], dict] = {}
+
+    # PrizePicks baseline map built from primary (non-alternate) markets:
+    # (player_name, stat_type) -> normal line.
+    prizepicks_normal_lines: dict[tuple[str, str], float] = {}
+
+    for book in bookmakers:
+        if book.get("key") != "prizepicks":
+            continue
+
+        for market in book.get("markets", []):
+            market_key = market.get("key", "")
+            stat_type = MARKET_TO_STAT.get(market_key)
+            if not stat_type or market_key.endswith("_alternate"):
+                continue
+
+            for outcome in market.get("outcomes", []):
+                name = outcome.get("description", "")
+                point = outcome.get("point")
+                if not name or point is None:
+                    continue
+                prizepicks_normal_lines[(name, stat_type)] = float(point)
 
     for book in bookmakers:
         book_key = book.get("key", "")
@@ -504,6 +539,16 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                 if under_odds is None:
                     under_odds = -119
 
+                normal_line = None
+                if book_key == "prizepicks":
+                    normal_line = prizepicks_normal_lines.get((odds_name, stat_type))
+
+                line_type = (
+                    _classify_prizepicks_line_type(market_key, float(line), normal_line)
+                    if book_key == "prizepicks"
+                    else "normal"
+                )
+
                 row_key = (player.id, game.id, stat_type, book_key, float(line))
 
                 pending_rows[row_key] = {
@@ -512,6 +557,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
                     "stat_type": stat_type,
                     "sportsbook": book_key,
                     "line": float(line),
+                    "line_type": line_type,
                     "over_odds": over_odds,
                     "under_odds": under_odds,
                     "fetched_at": datetime.now(timezone.utc),
@@ -528,6 +574,7 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
             **conflict_kwargs,
             set_={
                 "line": insert_stmt.excluded.line,
+                "line_type": insert_stmt.excluded.line_type,
                 "over_odds": insert_stmt.excluded.over_odds,
                 "under_odds": insert_stmt.excluded.under_odds,
                 "fetched_at": insert_stmt.excluded.fetched_at,
@@ -538,7 +585,6 @@ def _parse_and_save(db: Session, game: Game, data: dict) -> tuple[int, int]:
 
     db.commit()
     return player_lines_saved, game_lines_saved
-
 
 def _save_game_line(db: Session, game: Game, book_key: str, stat_type: str, market: dict) -> int:
     """

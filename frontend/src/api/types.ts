@@ -113,6 +113,7 @@ export interface Edge {
   stat_type: string
   sportsbook: string
   line: number
+  line_type?: 'normal' | 'goblin' | 'demon'
   over_odds?: number
   under_odds?: number
   projected: number
