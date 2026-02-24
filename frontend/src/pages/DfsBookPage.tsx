@@ -11,7 +11,7 @@ interface DfsBookPageProps {
   notes?: string[]
 }
 
-type LineTypeFilter = 'all' | 'goblin' | 'demon'
+type LineTypeFilter = 'all' | 'normal' | 'goblin' | 'demon'
 
 type BaselineMap = Map<string, number>
 
@@ -53,10 +53,12 @@ function buildNormalLineMap(edges: Edge[]): BaselineMap {
   return map
 }
 
-function classifyLineType(edge: Edge, normalLineMap: BaselineMap): 'goblin' | 'demon' {
+function classifyLineType(edge: Edge, normalLineMap: BaselineMap): 'normal' | 'goblin' | 'demon' {
   const normalLine = normalLineMap.get(getBaselineKey(edge))
-  if (normalLine === undefined) return 'goblin'
-  return edge.line <= normalLine ? 'goblin' : 'demon'
+  if (normalLine === undefined) return 'normal'
+
+  if (Math.abs(edge.line - normalLine) < 0.001) return 'normal'
+  return edge.line < normalLine ? 'goblin' : 'demon'
 }
 
 function sortBySafestGoblin(edges: Edge[]): Edge[] {
@@ -79,20 +81,13 @@ function sortByRiskyDemonOver(edges: Edge[]): Edge[] {
   })
 }
 
-function sortByBestFive(edges: Edge[]): Edge[] {
-  return [...edges].sort((a, b) => {
-    const aStreakBonus = Math.min(getStreakLength(a), 8) * 2
-    const bStreakBonus = Math.min(getStreakLength(b), 8) * 2
-
-    const aScore = getDisplayProbability(a) + Math.abs(a.edge_pct) + aStreakBonus
-    const bScore = getDisplayProbability(b) + Math.abs(b.edge_pct) + bStreakBonus
-
-    return bScore - aScore
-  })
-}
-
 function sortByEdge(edges: Edge[]): Edge[] {
   return [...edges].sort((a, b) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct))
+}
+
+function isPlayableLine(edge: Edge, lineType: 'normal' | 'goblin' | 'demon'): boolean {
+  if (lineType === 'normal') return true
+  return edge.recommendation === 'OVER'
 }
 
 export default function DfsBookPage({ title, sportsbook, description, notes = [] }: DfsBookPageProps) {
@@ -111,31 +106,31 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
   const allEdges = edges || []
   const normalLineMap = useMemo(() => buildNormalLineMap(allEdges), [allEdges])
 
-  const overOnlyAdjustedEdges = useMemo(
-    () => allEdges.filter((edge) => edge.recommendation === 'OVER'),
-    [allEdges]
-  )
-
   const filteredEdges = useMemo(() => {
-    if (lineType === 'all') return overOnlyAdjustedEdges
-    return overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === lineType)
-  }, [lineType, normalLineMap, overOnlyAdjustedEdges])
+    if (lineType === 'all') {
+      return allEdges.filter((edge) => isPlayableLine(edge, classifyLineType(edge, normalLineMap)))
+    }
+
+    return allEdges.filter((edge) => {
+      const edgeLineType = classifyLineType(edge, normalLineMap)
+      return edgeLineType === lineType && isPlayableLine(edge, edgeLineType)
+    })
+  }, [allEdges, lineType, normalLineMap])
 
   const safeGoblinStreaks = useMemo(
     () => sortBySafestGoblin(
-      overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'goblin' && edge.recommendation === 'OVER')
-    ).slice(0, 8),
-    [normalLineMap, overOnlyAdjustedEdges]
+      allEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'goblin' && edge.recommendation === 'OVER')
+    ).slice(0, 5),
+    [allEdges, normalLineMap]
   )
 
   const riskyDemonOvers = useMemo(
     () => sortByRiskyDemonOver(
-      overOnlyAdjustedEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'demon' && edge.recommendation === 'OVER')
-    ).slice(0, 8),
-    [normalLineMap, overOnlyAdjustedEdges]
+      allEdges.filter((edge) => classifyLineType(edge, normalLineMap) === 'demon' && edge.recommendation === 'OVER')
+    ).slice(0, 5),
+    [allEdges, normalLineMap]
   )
 
-  const bestFivePicks = useMemo(() => sortByBestFive(filteredEdges).slice(0, 5), [filteredEdges])
   const strongestEdges = useMemo(() => sortByEdge(filteredEdges), [filteredEdges])
 
   return (
@@ -156,7 +151,7 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-sm text-muted-foreground">Safest goblin streaks</div>
           <div className="mt-1 text-2xl font-semibold">{safeGoblinStreaks.length}</div>
@@ -170,15 +165,41 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
         </div>
 
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="text-sm text-muted-foreground">Best 5 picks</div>
-          <div className="mt-1 text-2xl font-semibold">{bestFivePicks.length}</div>
-          <div className="text-xs text-muted-foreground mt-1">Highest blended confidence for this DFS board</div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4">
           <div className="text-sm text-muted-foreground">Total qualified lines</div>
           <div className="mt-1 text-2xl font-semibold">{filteredEdges.length}</div>
           <div className="text-xs text-muted-foreground mt-1">Filtered by stat, position, edge, and line type</div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4">
+          <div className="text-red-400 font-medium">Error loading {title} lines</div>
+          <div className="text-red-400/80 text-sm mt-1">
+            {error instanceof Error ? error.message : 'Unknown error'}
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Safest bets (goblin streaks)</h3>
+          <EdgesTable
+            edges={safeGoblinStreaks}
+            isLoading={isLoading}
+            emptyTitle="No goblin-safe streaks found"
+            emptyDescription="Try lowering minimum edge or check when more adjusted lines are posted"
+            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
+          />
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Best demon risk lines (OVER)</h3>
+          <EdgesTable
+            edges={riskyDemonOvers}
+            isLoading={isLoading}
+            emptyTitle="No demon risk lines found"
+            emptyDescription="Demon/plus-money adjusted overs will appear here"
+            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
+          />
         </div>
       </div>
 
@@ -220,7 +241,8 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
               onChange={(e) => setLineType(e.target.value as LineTypeFilter)}
               className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
             >
-              <option value="all">All Adjusted Lines</option>
+              <option value="all">All Line Types</option>
+              <option value="normal">Normal Lines</option>
               <option value="goblin">Goblin / Safe Adjusted</option>
               <option value="demon">Demon / Risk Adjusted</option>
             </select>
@@ -241,51 +263,8 @@ export default function DfsBookPage({ title, sportsbook, description, notes = []
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-4">
-          <div className="text-red-400 font-medium">Error loading {title} lines</div>
-          <div className="text-red-400/80 text-sm mt-1">
-            {error instanceof Error ? error.message : 'Unknown error'}
-          </div>
-        </div>
-      )}
-
-      <div className="grid gap-6 xl:grid-cols-2">
-        <div>
-          <h3 className="text-lg font-semibold mb-3">Safest bets (goblin streaks)</h3>
-          <EdgesTable
-            edges={safeGoblinStreaks}
-            isLoading={isLoading}
-            emptyTitle="No goblin-safe streaks found"
-            emptyDescription="Try lowering minimum edge or check when more adjusted lines are posted"
-            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
-          />
-        </div>
-        <div>
-          <h3 className="text-lg font-semibold mb-3">Best demon risk lines (OVER)</h3>
-          <EdgesTable
-            edges={riskyDemonOvers}
-            isLoading={isLoading}
-            emptyTitle="No demon risk lines found"
-            emptyDescription="Demon/plus-money adjusted overs will appear here"
-            getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
-          />
-        </div>
-      </div>
-
       <div>
-        <h3 className="text-lg font-semibold mb-3">Best 5 {title} picks</h3>
-        <EdgesTable
-          edges={bestFivePicks}
-          isLoading={isLoading}
-          emptyTitle="No top picks found"
-          emptyDescription="Try reducing your filters"
-          getLineTypeLabel={(edge) => classifyLineType(edge, normalLineMap)}
-        />
-      </div>
-
-      <div>
-        <h3 className="text-lg font-semibold mb-3">All recommended {title} lines</h3>
+        <h3 className="text-lg font-semibold mb-3">All {title} lines</h3>
         <EdgesTable
           edges={strongestEdges}
           isLoading={isLoading}
