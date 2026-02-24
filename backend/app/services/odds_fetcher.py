@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.database import SessionLocal
 from app.models.player import Player, Game, OddsLine
 from app.config import settings
+from app.services.schema_compat import ensure_odds_lines_schema
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,8 @@ def fetch_todays_odds(db: Session | None = None) -> dict:
     }
 
     try:
+        ensure_odds_lines_schema(db)
+
         api_key = settings.ODDS_API_KEY
         if not api_key:
             raise ValueError("ODDS_API_KEY is not set in .env")

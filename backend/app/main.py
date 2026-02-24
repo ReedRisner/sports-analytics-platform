@@ -13,7 +13,7 @@ from app.database import engine, Base, SessionLocal
 from app.models import player  # ensures all tables are created
 
 from app.routers import players, games, projections, odds, auth
-from app.services.schema_compat import ensure_projection_history_schema
+from app.services.schema_compat import ensure_projection_history_schema, ensure_odds_lines_schema
 
 
 logging.basicConfig(level=logging.INFO)
@@ -112,6 +112,7 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         try:
             ensure_projection_history_schema(db)
+            ensure_odds_lines_schema(db)
             logger.info("Schema compatibility ensured (RUN_SCHEMA_COMPAT enabled)")
         except Exception as e:
             logger.exception(f"Schema compat step failed: {e}")
