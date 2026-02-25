@@ -7,8 +7,6 @@ cd C:\Users\reedl\OneDrive\Documents\sports-analytics-platform\backend
 
 python -c "from app.services.nba_fetcher import nightly_update; nightly_update()"
 
-python -m alembic upgrade head
-python -c "from app.services.nba_fetcher import backfill_endpoint_snapshots; backfill_endpoint_snapshots(days_back=14)"
 
 python -c "from app.services.projection_grader import grade_yesterdays_projections; from app.database import SessionLocal; grade_yesterdays_projections(SessionLocal())"
 

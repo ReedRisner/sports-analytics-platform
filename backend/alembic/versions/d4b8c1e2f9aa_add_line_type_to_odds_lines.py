@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -20,21 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = inspect(bind)
-    columns = {c['name'] for c in inspector.get_columns('odds_lines')}
-
-    # Make migration idempotent for environments where line_type was added manually.
-    if 'line_type' not in columns:
-        op.add_column('odds_lines', sa.Column('line_type', sa.String(length=20), nullable=True, server_default='normal'))
-
+    op.add_column('odds_lines', sa.Column('line_type', sa.String(length=20), nullable=True, server_default='normal'))
     op.execute("UPDATE odds_lines SET line_type = 'normal' WHERE line_type IS NULL")
     op.alter_column('odds_lines', 'line_type', nullable=False, server_default=None)
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    inspector = inspect(bind)
-    columns = {c['name'] for c in inspector.get_columns('odds_lines')}
-    if 'line_type' in columns:
-        op.drop_column('odds_lines', 'line_type')
+    op.drop_column('odds_lines', 'line_type')

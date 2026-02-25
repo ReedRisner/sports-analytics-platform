@@ -365,14 +365,12 @@ def get_team_injuries_with_fallback(
 
     teammate_names = [entry["player_name"] for entry in entries]
     mpg_map = {}
-    teammate_id_map = {}
     if teammate_names:
         teammates = (
             db.query(Player)
             .filter(Player.team_id == team_id, Player.name.in_(teammate_names))
             .all()
         )
-        teammate_id_map = {tm.name.lower(): tm.id for tm in teammates}
         teammate_ids = [tm.id for tm in teammates]
 
         if teammate_ids:
@@ -399,7 +397,6 @@ def get_team_injuries_with_fallback(
     for entry in entries:
         player_name = entry["player_name"]
         cleaned.append({
-            "player_id": teammate_id_map.get(player_name.lower()),
             "player_name": player_name,
             "status": entry["status"],
             "mpg": mpg_map.get(player_name.lower()),
