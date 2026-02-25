@@ -6,7 +6,7 @@ import pandas as pd
 from nba_api.stats.static import teams as nba_teams_static
 from nba_api.stats.endpoints import leaguedashteamstats
 from app.database import SessionLocal
-from app.models.player import Team, Player, PlayerGameStats, Game
+from app.models.player import Team, Player, PlayerGameStats, Game, EndpointSnapshot
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -169,12 +169,74 @@ def _set_cached_enhanced_signals(cache_key: str, payload: dict):
     _ENHANCED_SIGNAL_EXPIRY[cache_key] = datetime.now() + timedelta(minutes=_ENHANCED_SIGNAL_TTL_MINUTES)
 
 
+def _persist_enhanced_payload(
+    db,
+    payload: dict,
+    player_id: int,
+    team_id: int,
+    opp_team_id: int,
+    season: str,
+    game_id: int | None,
+    snapshot_date=None,
+):
+    if db is None:
+        return
+
+    from datetime import date as date_type
+
+    resolved_snapshot_date = snapshot_date
+    if resolved_snapshot_date is None and game_id:
+        game = db.query(Game).filter(Game.id == game_id).first()
+        if game:
+            resolved_snapshot_date = game.date
+    if resolved_snapshot_date is None:
+        resolved_snapshot_date = date_type.today()
+
+    endpoint_rows = []
+    for key, value in payload.items():
+        if key == "boxscore_advanced" and isinstance(value, dict):
+            for sub_key, sub_payload in value.items():
+                endpoint_rows.append((sub_key, sub_payload or {}))
+        else:
+            endpoint_rows.append((key, value or {}))
+
+    for endpoint_name, endpoint_payload in endpoint_rows:
+        existing = (
+            db.query(EndpointSnapshot)
+            .filter(
+                EndpointSnapshot.endpoint == endpoint_name,
+                EndpointSnapshot.player_id == player_id,
+                EndpointSnapshot.game_id == game_id,
+                EndpointSnapshot.season == season,
+                EndpointSnapshot.snapshot_date == resolved_snapshot_date,
+            )
+            .first()
+        )
+        if existing:
+            existing.payload = endpoint_payload
+            existing.team_id = team_id
+            existing.opp_team_id = opp_team_id
+        else:
+            db.add(EndpointSnapshot(
+                endpoint=endpoint_name,
+                season=season,
+                player_id=player_id,
+                team_id=team_id,
+                opp_team_id=opp_team_id,
+                game_id=game_id,
+                snapshot_date=resolved_snapshot_date,
+                payload=endpoint_payload,
+            ))
+
 def fetch_enhanced_projection_signals(
     player_id: int,
     team_id: int,
     opp_team_id: int,
     season: str = "2025-26",
     game_id: int | None = None,
+    db=None,
+    persist: bool = False,
+    snapshot_date=None,
 ) -> dict:
     """
     Best-effort multi-endpoint pull used by projection_engine.
@@ -185,6 +247,10 @@ def fetch_enhanced_projection_signals(
     cache_key = _enhanced_cache_key(player_id=player_id, opp_team_id=opp_team_id, season=season, game_id=game_id)
     cached = _get_cached_enhanced_signals(cache_key)
     if cached is not None:
+        if persist:
+            _persist_enhanced_payload(db=db, payload=cached, player_id=player_id, team_id=team_id, opp_team_id=opp_team_id, season=season, game_id=game_id, snapshot_date=snapshot_date)
+            if db is not None:
+                db.commit()
         return cached
 
     payload = {
@@ -397,6 +463,10 @@ def fetch_enhanced_projection_signals(
                 payload["boxscore_advanced"][key] = {}
 
     _set_cached_enhanced_signals(cache_key, payload)
+    if persist:
+        _persist_enhanced_payload(db=db, payload=payload, player_id=player_id, team_id=team_id, opp_team_id=opp_team_id, season=season, game_id=game_id, snapshot_date=snapshot_date)
+        if db is not None:
+            db.commit()
     return payload
 
 def rval(headers, row, col, default=0):
@@ -444,6 +514,55 @@ def get_team_stats_df(season, measure_type, per_mode="PerGame"):
         print(f"    ✓ {measure_type} ({FALLBACK}): {len(df)} teams")
         return df
 
+
+
+def backfill_endpoint_snapshots(season="2025-26", days_back: int = 14, limit_players_per_game: int = 14):
+    """
+    Persist endpoint snapshots for recent games so analytics tables can query
+    raw endpoint data without recomputing request-time fetches.
+    """
+    from datetime import date as date_type, timedelta
+
+    db = SessionLocal()
+    try:
+        min_date = date_type.today() - timedelta(days=max(1, days_back))
+        games = (
+            db.query(Game)
+            .filter(Game.date >= min_date)
+            .order_by(Game.date.desc())
+            .all()
+        )
+
+        saved_games = 0
+        for game in games:
+            for team_id, opp_team_id in [
+                (game.home_team_id, game.away_team_id),
+                (game.away_team_id, game.home_team_id),
+            ]:
+                players = (
+                    db.query(Player)
+                    .filter(Player.team_id == team_id, Player.is_active == True)
+                    .limit(limit_players_per_game)
+                    .all()
+                )
+                for player in players:
+                    fetch_enhanced_projection_signals(
+                        player_id=player.id,
+                        team_id=team_id,
+                        opp_team_id=opp_team_id,
+                        season=season,
+                        game_id=game.id,
+                        db=db,
+                        persist=True,
+                        snapshot_date=game.date,
+                    )
+            saved_games += 1
+            if saved_games % 5 == 0:
+                print(f"  Backfilled endpoint snapshots for {saved_games}/{len(games)} games...")
+
+        print(f"  ✓ Endpoint snapshot backfill complete ({saved_games} games)")
+    finally:
+        db.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Seed 30 teams
@@ -761,9 +880,21 @@ def fetch_player_gamelogs(season="2025-26"):
         for _, r in games_df.head(3).iterrows():
             print(f"    {r['GAME_ID']}: HOME {r['HOME_PTS']} vs AWAY {r['AWAY_PTS']}")
 
+        existing_games = {g.nba_game_id: g for g in db.query(Game).all()}
         game_cache = {}
         for _, grow in games_df.iterrows():
             nba_game_id = str(grow['GAME_ID'])
+            existing = existing_games.get(nba_game_id)
+            if existing:
+                existing.date = str(grow['GAME_DATE'])[:10]
+                existing.home_team_id = int(grow['HOME_TEAM_ID'])
+                existing.away_team_id = int(grow['AWAY_TEAM_ID'])
+                existing.home_score = int(grow['HOME_PTS'])
+                existing.away_score = int(grow['AWAY_PTS'])
+                existing.status = 'final'
+                game_cache[nba_game_id] = existing.id
+                continue
+
             game = Game(
                 nba_game_id  = nba_game_id,
                 date         = str(grow['GAME_DATE'])[:10],
@@ -775,6 +906,7 @@ def fetch_player_gamelogs(season="2025-26"):
             )
             db.add(game)
             db.flush()
+            existing_games[nba_game_id] = game
             game_cache[nba_game_id] = game.id
 
         db.commit()
@@ -822,6 +954,7 @@ def fetch_player_gamelogs(season="2025-26"):
         # ── Save player stat lines ────────────────────────────────────────────
         team_cache = {}
         saved      = 0
+        existing_player_game = {(row.player_id, row.game_id) for row in db.query(PlayerGameStats.player_id, PlayerGameStats.game_id).all()}
 
         for _, row in df_base.iterrows():
             player_name   = row.get('PLAYER_NAME', '')
@@ -868,9 +1001,13 @@ def fetch_player_gamelogs(season="2025-26"):
             usg_key    = f"{nba_player_id}_{nba_game_id}"
             usage_rate = safe_float(usg_lookup.get(usg_key)) if usg_lookup.get(usg_key) is not None else None
 
+            game_db_id = game_cache[nba_game_id]
+            if (player.id, game_db_id) in existing_player_game:
+                continue
+
             db.add(PlayerGameStats(
                 player_id      = player.id,
-                game_id        = game_cache[nba_game_id],
+                game_id        = game_db_id,
                 minutes        = minutes,
                 points         = points,
                 rebounds       = rebounds,
@@ -897,6 +1034,7 @@ def fetch_player_gamelogs(season="2025-26"):
                 ra             = rebounds + assists,
                 fantasy_points = safe_float(row.get('NBA_FANTASY_PTS')),
             ))
+            existing_player_game.add((player.id, game_db_id))
             saved += 1
 
             if saved % 500 == 0:
@@ -1177,6 +1315,10 @@ def nightly_update(season="2025-26"):
             usg_key   = f"{nba_player_id}_{nba_game_id}"
             usage_rate = safe_float(usg_lookup.get(usg_key)) if usg_lookup.get(usg_key) is not None else None
 
+            game_db_id = game_cache[nba_game_id]
+            if (player.id, game_db_id) in existing_player_game:
+                continue
+
             db.add(PlayerGameStats(
                 player_id   = player.id,
                 game_id     = db_game_id,
@@ -1206,6 +1348,7 @@ def nightly_update(season="2025-26"):
                 ra          = rebounds + assists,
                 fantasy_points = safe_float(row.get('NBA_FANTASY_PTS')),
             ))
+            existing_player_game.add((player.id, game_db_id))
             saved += 1
 
             if saved % 500 == 0:

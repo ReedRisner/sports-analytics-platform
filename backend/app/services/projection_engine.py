@@ -290,7 +290,7 @@ def _opponent_strength_factor(db: Session, opp_team_id: int) -> float:
     return strength_factor
 
 
-def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_id: Optional[int] = None) -> float:
+def _enhanced_api_factor(db: Session, player: Player, opp_team_id: int, stat_type: str, game_id: Optional[int] = None) -> float:
     """Blend additional nba_api endpoint context into a compact multiplier."""
     try:
         context = fetch_enhanced_projection_signals(
@@ -298,6 +298,8 @@ def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_
             team_id=player.team_id,
             opp_team_id=opp_team_id,
             game_id=game_id,
+            db=db,
+            persist=True,
         )
     except Exception:
         return 1.0
@@ -837,7 +839,7 @@ def project_player(
         )
         form_factor    = _recent_form_factor(values)
         opp_strength   = _opponent_strength_factor(db, opp_team_id)
-        api_context_factor = _enhanced_api_factor(player, opp_team_id, stat_type, game_id=game_id)
+        api_context_factor = _enhanced_api_factor(db, player, opp_team_id, stat_type, game_id=game_id)
         teammate_context_factor = _teammate_context_factor(db, player, stat_col, teammate_ids_out)
 
         adjusted = (
