@@ -16,6 +16,9 @@ export default function PlayerPage() {
   const [selectedStat, setSelectedStat] = useState<string>('points')
   const [gameLogFilter, setGameLogFilter] = useState<'l5' | 'l10' | 'vs_opp'>('l10')
   const [runMonteCarlo, setRunMonteCarlo] = useState(false) // Manual trigger
+  const [boxScoreSplit, setBoxScoreSplit] = useState<'l5' | 'l10' | 'vs_opp' | 'season'>('l5')
+  const [teammateMode, setTeammateMode] = useState<'in' | 'out' | 'none'>('none')
+  const [selectedTeammateIds, setSelectedTeammateIds] = useState<number[]>([])
 
   // Fetch player projection from dedicated single-player endpoint (much faster than /projections/today)
   const { data: projection, isLoading: projLoading, error: projError } = useQuery({
@@ -90,6 +93,43 @@ export default function PlayerPage() {
   })
 
   // Fetch game log - endpoint may not exist yet
+
+  const availableInjuries = Array.isArray(projection?.team_injuries) ? projection.team_injuries : []
+
+  const { data: boxScoreSplits } = useQuery({
+    queryKey: ['player-box-splits', playerId, boxScoreSplit, projection?.matchup?.opp_team_id, teammateMode, selectedTeammateIds],
+    queryFn: async () => {
+      const params: any = { split: boxScoreSplit }
+      if (boxScoreSplit === 'vs_opp' && projection?.matchup?.opp_team_id) {
+        params.opp_team_id = projection.matchup.opp_team_id
+      }
+      if (teammateMode !== 'none' && selectedTeammateIds.length > 0) {
+        params.teammate_mode = teammateMode
+        params.teammate_ids = selectedTeammateIds
+      }
+      const { data } = await apiClient.get(`/players/${playerId}/box-score-splits`, { params })
+      return data
+    },
+    enabled: !!playerId,
+    staleTime: 120000,
+  })
+
+  const { data: similarPlayers } = useQuery({
+    queryKey: ['similar-vs-team', playerId, selectedStat, projection?.matchup?.opp_team_id],
+    queryFn: async () => {
+      if (!projection?.matchup?.opp_team_id) return { players: [] }
+      const { data } = await apiClient.get(`/players/${playerId}/similar-vs-team`, {
+        params: {
+          opp_team_id: projection.matchup.opp_team_id,
+          stat_type: selectedStat,
+          limit: 8,
+        }
+      })
+      return data
+    },
+    enabled: !!playerId && !!projection?.matchup?.opp_team_id,
+  })
+
   const { data: gameLog } = useQuery({
     queryKey: ['player-gamelog', playerId],
     queryFn: async () => {
@@ -648,6 +688,103 @@ export default function PlayerPage() {
             No injured teammates reported right now.
           </div>
         )}
+      </div>
+
+
+      <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-xl font-bold">Box Score Splits</h2>
+          <div className="flex flex-wrap gap-2">
+            {(['l5', 'l10', 'vs_opp', 'season'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setBoxScoreSplit(s)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium ${boxScoreSplit === s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+              >
+                {s === 'l5' ? 'Last 5' : s === 'l10' ? 'Last 10' : s === 'vs_opp' ? `vs ${projection?.matchup?.opp_abbr || 'Opp'}` : 'Season'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={teammateMode}
+            onChange={(e) => setTeammateMode(e.target.value as 'in' | 'out' | 'none')}
+            className="px-3 py-2 rounded-md bg-muted text-sm"
+          >
+            <option value="none">No teammate filter</option>
+            <option value="out">Teammates OUT</option>
+            <option value="in">Teammates IN</option>
+          </select>
+          {availableInjuries.map((inj: any) => {
+            const checked = selectedTeammateIds.includes(inj.player_id)
+            return (
+              <label key={inj.player_name} className="text-xs flex items-center gap-1 rounded bg-muted px-2 py-1">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                      ? [...selectedTeammateIds, inj.player_id]
+                      : selectedTeammateIds.filter((id) => id !== inj.player_id)
+                    setSelectedTeammateIds(next)
+                  }}
+                />
+                {inj.player_name}
+              </label>
+            )
+          })}
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                <th className="text-left py-2">Date</th>
+                <th className="text-left py-2">Opp</th>
+                <th className="text-right py-2">PTS</th>
+                <th className="text-right py-2">REB</th>
+                <th className="text-right py-2">AST</th>
+                <th className="text-right py-2">3PM</th>
+                <th className="text-right py-2">PRA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(boxScoreSplits?.rows || []).map((row: any) => (
+                <tr key={`${row.date}-${row.opponent}`} className="border-b border-border/40 last:border-0">
+                  <td className="py-2">{row.date}</td>
+                  <td className="py-2">{row.home_away} {row.opponent}</td>
+                  <td className="py-2 text-right font-mono">{row.points}</td>
+                  <td className="py-2 text-right font-mono">{row.rebounds}</td>
+                  <td className="py-2 text-right font-mono">{row.assists}</td>
+                  <td className="py-2 text-right font-mono">{row.threes}</td>
+                  <td className="py-2 text-right font-mono">{row.pra?.toFixed?.(1) ?? row.pra}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-6">
+        <h2 className="text-xl font-bold mb-4">How Similar Players Performed vs This Team</h2>
+        <div className="space-y-2">
+          {(similarPlayers?.players || []).length === 0 ? (
+            <div className="text-sm text-muted-foreground">No similar-player sample available for this matchup yet.</div>
+          ) : (similarPlayers.players || []).map((p: any) => (
+            <div key={p.player_id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div>
+                <div className="font-medium">{p.player_name}</div>
+                <div className="text-xs text-muted-foreground">Season {p.season_avg} • {p.games_vs_opp} games vs opp</div>
+              </div>
+              <div className="text-right">
+                <div className="text-lg font-mono font-bold">{p.vs_opp_avg}</div>
+                <div className="text-xs text-muted-foreground">Similarity {(p.similarity_score * 100).toFixed(0)}%</div>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Game Log Chart */}

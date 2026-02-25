@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.models.player import Player, PlayerGameStats, Team, Game
 from app.services.injury_tracker import calculate_injury_impact_factor
+from app.services.nba_fetcher import fetch_enhanced_projection_signals
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 LEAGUE_AVG_PACE = 100.0
@@ -150,6 +151,8 @@ class Projection:
     injury_factor:  float = 1.0
     form_factor:    float = 1.0
     opp_strength:   float = 1.0
+    api_context_factor: float = 1.0
+    teammate_context_factor: float = 1.0
     is_back_to_back: bool = False
 
     line:           Optional[float] = None
@@ -285,6 +288,158 @@ def _opponent_strength_factor(db: Session, opp_team_id: int) -> float:
     strength_factor = max(0.90, min(1.10, strength_factor))
     
     return strength_factor
+
+
+def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_id: Optional[int] = None) -> float:
+    """Blend additional nba_api endpoint context into a compact multiplier."""
+    try:
+        context = fetch_enhanced_projection_signals(
+            player_id=player.id,
+            team_id=player.team_id,
+            opp_team_id=opp_team_id,
+            game_id=game_id,
+        )
+    except Exception:
+        return 1.0
+
+    season_row = context.get("player_splits") or {}
+    lastn_row = context.get("last_n") or {}
+    matchup_row = context.get("matchups") or {}
+
+    season_pts = _safe(season_row.get("PTS") or season_row.get("PLAYER_PTS"))
+    last5_pts = _safe(lastn_row.get("LAST_5_PTS") or lastn_row.get("PTS"))
+    usage = _safe(season_row.get("USG_PCT") or season_row.get("USG%"))
+    poss = _safe(matchup_row.get("POSS") or matchup_row.get("POSS_PER_GAME"))
+
+    trend_factor = 1.0
+    if season_pts > 0 and last5_pts > 0:
+        trend_factor = _clamp(last5_pts / season_pts, 0.94, 1.06)
+
+    usage_factor = _clamp(1.0 + ((usage - 20.0) / 200.0), 0.96, 1.05) if usage else 1.0
+    matchup_volume_factor = _clamp(1.0 + ((poss - 5.0) / 100.0), 0.97, 1.03) if poss else 1.0
+
+    boxscore = context.get("boxscore_advanced") or {}
+    adv_v3 = boxscore.get("boxscoreadvancedv3") or {}
+    usage_v3 = boxscore.get("boxscoreusagev3") or {}
+    scoring_v3 = boxscore.get("boxscorescoringv3") or {}
+    track_v3 = boxscore.get("boxscoreplayertrackv3") or {}
+
+    estimated = context.get("player_estimated") or {}
+    clutch = context.get("player_clutch") or {}
+    shot_profile = context.get("player_shot_profile") or {}
+    team_est = context.get("team_estimated") or {}
+    player_team_est = team_est.get("player_team") or {}
+    opp_team_est = team_est.get("opp_team") or {}
+
+    adv_usg = _safe(adv_v3.get("USG_PCT") or adv_v3.get("E_USG_PCT") or usage_v3.get("USG_PCT"))
+    adv_pie = _safe(adv_v3.get("PIE"))
+    touches = _safe(track_v3.get("TOUCHES"))
+    passes = _safe(track_v3.get("PASSES_MADE"))
+    pts_off_tov = _safe(scoring_v3.get("PTS_OFF_TOV"))
+
+    est_off = _safe(estimated.get("E_OFF_RATING") or estimated.get("OFF_RATING"))
+    est_def = _safe(estimated.get("E_DEF_RATING") or estimated.get("DEF_RATING"))
+    est_net = _safe(estimated.get("E_NET_RATING") or estimated.get("NET_RATING"))
+    est_ast_ratio = _safe(estimated.get("AST_RATIO"))
+
+    clutch_pts = _safe(clutch.get("PTS"))
+    clutch_ast = _safe(clutch.get("AST"))
+
+    restricted_pct = _safe(shot_profile.get("Restricted Area FG PCT") or shot_profile.get("RA_FG_PCT"))
+    corner3_pct = _safe(shot_profile.get("Left Corner 3 FG PCT") or shot_profile.get("LC3_FG_PCT"))
+
+    team_pace = _safe(player_team_est.get("E_PACE") or player_team_est.get("PACE"))
+    opp_def = _safe(opp_team_est.get("E_DEF_RATING") or opp_team_est.get("DEF_RATING"))
+
+    boxscore_factor = 1.0
+    if adv_usg:
+        boxscore_factor *= _clamp(1.0 + ((adv_usg - 20.0) / 220.0), 0.97, 1.06)
+    if adv_pie:
+        boxscore_factor *= _clamp(1.0 + ((adv_pie - 0.10) / 2.5), 0.97, 1.05)
+    if stat_type in {"assists", "pa", "pra"} and passes:
+        boxscore_factor *= _clamp(1.0 + ((passes - 45.0) / 900.0), 0.97, 1.04)
+    if stat_type in {"points", "pra", "pr"} and pts_off_tov:
+        boxscore_factor *= _clamp(1.0 + ((pts_off_tov - 3.0) / 120.0), 0.98, 1.03)
+    if touches and stat_type in {"points", "assists", "pra", "pa"}:
+        boxscore_factor *= _clamp(1.0 + ((touches - 60.0) / 1200.0), 0.97, 1.04)
+
+    if est_off:
+        boxscore_factor *= _clamp(1.0 + ((est_off - 112.0) / 1200.0), 0.98, 1.04)
+    if est_def and opp_def:
+        # Stronger opposing estimated defense trims projections modestly.
+        defense_edge = (est_def - opp_def) / 100.0
+        boxscore_factor *= _clamp(1.0 + defense_edge, 0.97, 1.03)
+    if stat_type in {"assists", "pa", "pra"} and (est_ast_ratio or clutch_ast):
+        playmaking_signal = est_ast_ratio if est_ast_ratio else clutch_ast
+        boxscore_factor *= _clamp(1.0 + ((playmaking_signal - 18.0) / 700.0), 0.97, 1.04)
+    if stat_type in {"points", "pra", "pr"} and clutch_pts:
+        boxscore_factor *= _clamp(1.0 + ((clutch_pts - 2.5) / 120.0), 0.98, 1.03)
+    if stat_type in {"points", "threes", "pra"} and (restricted_pct or corner3_pct):
+        shot_eff = restricted_pct if restricted_pct else corner3_pct
+        boxscore_factor *= _clamp(1.0 + ((shot_eff - 0.55) / 10.0), 0.98, 1.03)
+    if team_pace:
+        boxscore_factor *= _clamp(1.0 + ((team_pace - 100.0) / 1200.0), 0.98, 1.03)
+    if est_net:
+        boxscore_factor *= _clamp(1.0 + (est_net / 1500.0), 0.98, 1.03)
+
+    stat_bias = 1.0
+    if stat_type in {"assists", "pa", "pra"}:
+        stat_bias = _clamp(1.0 + ((usage - 22.0) / 250.0), 0.97, 1.04) if usage else 1.0
+
+    return _clamp(trend_factor * usage_factor * matchup_volume_factor * boxscore_factor * stat_bias, 0.88, 1.12)
+
+
+def _teammate_context_factor(
+    db: Session,
+    player: Player,
+    stat_col: str,
+    teammate_ids_out: Optional[list[int]],
+) -> float:
+    """Estimate how the player performs when selected teammates are inactive."""
+    if not teammate_ids_out:
+        return 1.0
+
+    teammate_ids = [int(tid) for tid in teammate_ids_out if tid]
+    if not teammate_ids:
+        return 1.0
+
+    recent_rows = (
+        db.query(PlayerGameStats, Game)
+        .join(Game, PlayerGameStats.game_id == Game.id)
+        .filter(PlayerGameStats.player_id == player.id)
+        .order_by(desc(Game.date))
+        .limit(30)
+        .all()
+    )
+    if not recent_rows:
+        return 1.0
+
+    game_ids = [g.id for _, g in recent_rows]
+    teammate_rows = (
+        db.query(PlayerGameStats.player_id, PlayerGameStats.game_id, PlayerGameStats.minutes)
+        .filter(
+            PlayerGameStats.player_id.in_(teammate_ids),
+            PlayerGameStats.game_id.in_(game_ids),
+        )
+        .all()
+    )
+
+    presence = {(pid, gid): mins for pid, gid, mins in teammate_rows}
+    with_out, with_in = [], []
+    for stat, game in recent_rows:
+        v = getattr(stat, stat_col, None)
+        if v is None:
+            continue
+        all_out = all((_safe(presence.get((tid, game.id), 0.0)) < 1.0) for tid in teammate_ids)
+        if all_out:
+            with_out.append(_safe(v))
+        else:
+            with_in.append(_safe(v))
+
+    if len(with_out) < 2 or len(with_in) < 3:
+        return 1.0
+
+    return _clamp((_avg(with_out) / _avg(with_in)) if _avg(with_in) else 1.0, 0.9, 1.12)
 
 
 # ── Situational adjustment helpers ───────────────────────────────────────────
@@ -522,6 +677,7 @@ def project_player(
     min_minutes: float           = MIN_THRESHOLD,
     game_id:     Optional[int]   = None,
     game_date:   Optional[date]  = None,
+    teammate_ids_out: Optional[list[int]] = None,
 ) -> Optional[Projection]:
     """
     Full projection for one player + stat type.
@@ -563,6 +719,8 @@ def project_player(
     injury_factor  = 1.0
     form_factor    = 1.0
     opp_strength   = 1.0
+    api_context_factor = 1.0
+    teammate_context_factor = 1.0
     is_back_to_back = False
 
     # Auto-infer opponent/game context when not explicitly provided.
@@ -617,6 +775,8 @@ def project_player(
         )
         form_factor    = _recent_form_factor(values)
         opp_strength   = _opponent_strength_factor(db, opp_team_id)
+        api_context_factor = _enhanced_api_factor(player, opp_team_id, stat_type, game_id=game_id)
+        teammate_context_factor = _teammate_context_factor(db, player, stat_col, teammate_ids_out)
 
         adjusted = (
             adjusted 
@@ -626,6 +786,8 @@ def project_player(
             * injury_factor
             * form_factor
             * opp_strength
+            * api_context_factor
+            * teammate_context_factor
         )
 
     recent = values[:STD_WINDOW]
@@ -671,6 +833,8 @@ def project_player(
         injury_factor   = round(injury_factor, 3),
         form_factor     = round(form_factor, 3),
         opp_strength    = round(opp_strength, 3),
+        api_context_factor = round(api_context_factor, 3),
+        teammate_context_factor = round(teammate_context_factor, 3),
         is_back_to_back = is_back_to_back,
         line         = line,
         edge_pct     = round(edge_pct, 2)         if edge_pct   is not None else None,
