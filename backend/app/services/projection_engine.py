@@ -305,24 +305,35 @@ def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_
     season_row = context.get("player_splits") or {}
     lastn_row = context.get("last_n") or {}
     matchup_row = context.get("matchups") or {}
+    league_profile = context.get("league_profile") or {}
+    team_on_off = context.get("team_on_off") or {}
 
     season_pts = _safe(season_row.get("PTS") or season_row.get("PLAYER_PTS"))
+    season_reb = _safe(season_row.get("REB"))
+    season_ast = _safe(season_row.get("AST"))
     last5_pts = _safe(lastn_row.get("LAST_5_PTS") or lastn_row.get("PTS"))
-    usage = _safe(season_row.get("USG_PCT") or season_row.get("USG%"))
+    usage = _safe(season_row.get("USG_PCT") or season_row.get("USG%") or league_profile.get("USG_PCT"))
     poss = _safe(matchup_row.get("POSS") or matchup_row.get("POSS_PER_GAME"))
 
     trend_factor = 1.0
-    if season_pts > 0 and last5_pts > 0:
-        trend_factor = _clamp(last5_pts / season_pts, 0.94, 1.06)
+    baseline_stat = season_pts if stat_type in {"points", "threes", "pr", "pra"} else (season_ast if stat_type in {"assists", "pa"} else season_reb)
+    last5_generic = _safe(lastn_row.get("PTS") or lastn_row.get("AST") or lastn_row.get("REB") or last5_pts)
+    if baseline_stat > 0 and last5_generic > 0:
+        trend_factor = _clamp(last5_generic / baseline_stat, 0.93, 1.07)
 
-    usage_factor = _clamp(1.0 + ((usage - 20.0) / 200.0), 0.96, 1.05) if usage else 1.0
-    matchup_volume_factor = _clamp(1.0 + ((poss - 5.0) / 100.0), 0.97, 1.03) if poss else 1.0
+    usage_factor = _clamp(1.0 + ((usage - 20.0) / 180.0), 0.95, 1.06) if usage else 1.0
+    matchup_volume_factor = _clamp(1.0 + ((poss - 5.0) / 90.0), 0.96, 1.04) if poss else 1.0
 
     boxscore = context.get("boxscore_advanced") or {}
-    adv_v3 = boxscore.get("boxscoreadvancedv3") or {}
-    usage_v3 = boxscore.get("boxscoreusagev3") or {}
-    scoring_v3 = boxscore.get("boxscorescoringv3") or {}
+    adv_v3 = boxscore.get("boxscoreadvancedv3") or boxscore.get("boxscoreadvancedv2") or {}
+    def_v2 = boxscore.get("boxscoredefensivev2") or {}
+    four_v3 = boxscore.get("boxscorefourfactorsv3") or boxscore.get("boxscorefourfactorsv2") or {}
+    hustle_v2 = boxscore.get("boxscorehustlev2") or {}
+    misc_v3 = boxscore.get("boxscoremiscv3") or boxscore.get("boxscoremiscv2") or {}
+    scoring_v3 = boxscore.get("boxscorescoringv3") or boxscore.get("boxscorescoringv2") or {}
     track_v3 = boxscore.get("boxscoreplayertrackv3") or {}
+    trad_v3 = boxscore.get("boxscoretraditionalv3") or boxscore.get("boxscoretraditionalv2") or {}
+    usage_v3 = boxscore.get("boxscoreusagev3") or boxscore.get("boxscoreusagev2") or {}
 
     estimated = context.get("player_estimated") or {}
     clutch = context.get("player_clutch") or {}
@@ -333,9 +344,28 @@ def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_
 
     adv_usg = _safe(adv_v3.get("USG_PCT") or adv_v3.get("E_USG_PCT") or usage_v3.get("USG_PCT"))
     adv_pie = _safe(adv_v3.get("PIE"))
+    adv_ast_pct = _safe(adv_v3.get("AST_PCT"))
+    adv_reb_pct = _safe(adv_v3.get("REB_PCT"))
+
     touches = _safe(track_v3.get("TOUCHES"))
     passes = _safe(track_v3.get("PASSES_MADE"))
-    pts_off_tov = _safe(scoring_v3.get("PTS_OFF_TOV"))
+    reb_chances = _safe(track_v3.get("REB_CHANCES"))
+
+    pts_off_tov = _safe(scoring_v3.get("PTS_OFF_TOV") or misc_v3.get("PTS_OFF_TOV"))
+    second_chance_pts = _safe(scoring_v3.get("SECOND_CHANCE_PTS") or misc_v3.get("PTS_2ND_CHANCE"))
+    fga = _safe(trad_v3.get("FGA"))
+    fta = _safe(trad_v3.get("FTA"))
+
+    steals = _safe(def_v2.get("STL"))
+    blocks = _safe(def_v2.get("BLK"))
+    dreb = _safe(def_v2.get("DREB"))
+
+    efg_pct = _safe(four_v3.get("EFG_PCT"))
+    tov_pct = _safe(four_v3.get("TOV_PCT"))
+    oreb_pct = _safe(four_v3.get("OREB_PCT"))
+
+    deflections = _safe(hustle_v2.get("DEFLECTIONS"))
+    loose_balls = _safe(hustle_v2.get("LOOSE_BALLS_RECOVERED"))
 
     est_off = _safe(estimated.get("E_OFF_RATING") or estimated.get("OFF_RATING"))
     est_def = _safe(estimated.get("E_DEF_RATING") or estimated.get("DEF_RATING"))
@@ -351,42 +381,74 @@ def _enhanced_api_factor(player: Player, opp_team_id: int, stat_type: str, game_
     team_pace = _safe(player_team_est.get("E_PACE") or player_team_est.get("PACE"))
     opp_def = _safe(opp_team_est.get("E_DEF_RATING") or opp_team_est.get("DEF_RATING"))
 
-    boxscore_factor = 1.0
-    if adv_usg:
-        boxscore_factor *= _clamp(1.0 + ((adv_usg - 20.0) / 220.0), 0.97, 1.06)
-    if adv_pie:
-        boxscore_factor *= _clamp(1.0 + ((adv_pie - 0.10) / 2.5), 0.97, 1.05)
-    if stat_type in {"assists", "pa", "pra"} and passes:
-        boxscore_factor *= _clamp(1.0 + ((passes - 45.0) / 900.0), 0.97, 1.04)
-    if stat_type in {"points", "pra", "pr"} and pts_off_tov:
-        boxscore_factor *= _clamp(1.0 + ((pts_off_tov - 3.0) / 120.0), 0.98, 1.03)
-    if touches and stat_type in {"points", "assists", "pra", "pa"}:
-        boxscore_factor *= _clamp(1.0 + ((touches - 60.0) / 1200.0), 0.97, 1.04)
+    onoff_net = _safe(team_on_off.get("NET_RATING"))
 
+    feature_factor = 1.0
+    if adv_usg:
+        feature_factor *= _clamp(1.0 + ((adv_usg - 20.0) / 200.0), 0.96, 1.07)
+    if adv_pie:
+        feature_factor *= _clamp(1.0 + ((adv_pie - 0.10) / 2.2), 0.97, 1.06)
     if est_off:
-        boxscore_factor *= _clamp(1.0 + ((est_off - 112.0) / 1200.0), 0.98, 1.04)
+        feature_factor *= _clamp(1.0 + ((est_off - 112.0) / 1100.0), 0.98, 1.05)
     if est_def and opp_def:
-        # Stronger opposing estimated defense trims projections modestly.
-        defense_edge = (est_def - opp_def) / 100.0
-        boxscore_factor *= _clamp(1.0 + defense_edge, 0.97, 1.03)
-    if stat_type in {"assists", "pa", "pra"} and (est_ast_ratio or clutch_ast):
-        playmaking_signal = est_ast_ratio if est_ast_ratio else clutch_ast
-        boxscore_factor *= _clamp(1.0 + ((playmaking_signal - 18.0) / 700.0), 0.97, 1.04)
-    if stat_type in {"points", "pra", "pr"} and clutch_pts:
-        boxscore_factor *= _clamp(1.0 + ((clutch_pts - 2.5) / 120.0), 0.98, 1.03)
-    if stat_type in {"points", "threes", "pra"} and (restricted_pct or corner3_pct):
-        shot_eff = restricted_pct if restricted_pct else corner3_pct
-        boxscore_factor *= _clamp(1.0 + ((shot_eff - 0.55) / 10.0), 0.98, 1.03)
-    if team_pace:
-        boxscore_factor *= _clamp(1.0 + ((team_pace - 100.0) / 1200.0), 0.98, 1.03)
+        defense_edge = (est_def - opp_def) / 90.0
+        feature_factor *= _clamp(1.0 + defense_edge, 0.97, 1.04)
     if est_net:
-        boxscore_factor *= _clamp(1.0 + (est_net / 1500.0), 0.98, 1.03)
+        feature_factor *= _clamp(1.0 + (est_net / 1200.0), 0.98, 1.04)
+    if onoff_net:
+        feature_factor *= _clamp(1.0 + (onoff_net / 1400.0), 0.98, 1.03)
+
+    if stat_type in {"assists", "pa", "pra"}:
+        if passes:
+            feature_factor *= _clamp(1.0 + ((passes - 45.0) / 800.0), 0.97, 1.05)
+        if est_ast_ratio or clutch_ast:
+            playmaking_signal = est_ast_ratio if est_ast_ratio else clutch_ast
+            feature_factor *= _clamp(1.0 + ((playmaking_signal - 18.0) / 600.0), 0.97, 1.05)
+        if adv_ast_pct:
+            feature_factor *= _clamp(1.0 + ((adv_ast_pct - 20.0) / 500.0), 0.98, 1.03)
+
+    if stat_type in {"rebounds", "ra", "pr", "pra"}:
+        if reb_chances:
+            feature_factor *= _clamp(1.0 + ((reb_chances - 10.0) / 160.0), 0.97, 1.06)
+        if dreb or adv_reb_pct:
+            reb_signal = adv_reb_pct if adv_reb_pct else dreb
+            feature_factor *= _clamp(1.0 + ((reb_signal - 8.0) / 320.0), 0.98, 1.04)
+        if oreb_pct:
+            feature_factor *= _clamp(1.0 + ((oreb_pct - 0.20) / 5.0), 0.98, 1.03)
+
+    if stat_type in {"points", "pr", "pa", "pra", "threes"}:
+        if touches:
+            feature_factor *= _clamp(1.0 + ((touches - 60.0) / 1000.0), 0.97, 1.04)
+        if fga or fta:
+            volume_signal = fga + (fta * 0.44)
+            feature_factor *= _clamp(1.0 + ((volume_signal - 18.0) / 260.0), 0.97, 1.05)
+        if pts_off_tov:
+            feature_factor *= _clamp(1.0 + ((pts_off_tov - 3.0) / 100.0), 0.98, 1.03)
+        if second_chance_pts:
+            feature_factor *= _clamp(1.0 + ((second_chance_pts - 2.0) / 140.0), 0.98, 1.03)
+        if restricted_pct or corner3_pct:
+            shot_eff = restricted_pct if restricted_pct else corner3_pct
+            feature_factor *= _clamp(1.0 + ((shot_eff - 0.55) / 9.0), 0.98, 1.04)
+        if clutch_pts:
+            feature_factor *= _clamp(1.0 + ((clutch_pts - 2.5) / 100.0), 0.98, 1.03)
+        if efg_pct:
+            feature_factor *= _clamp(1.0 + ((efg_pct - 0.52) / 8.0), 0.98, 1.03)
+
+    if stat_type in {"steals", "blocks"}:
+        hustle_signal = steals + blocks + (deflections * 0.35) + (loose_balls * 0.25)
+        if hustle_signal:
+            feature_factor *= _clamp(1.0 + ((hustle_signal - 2.5) / 60.0), 0.96, 1.08)
+
+    if tov_pct:
+        feature_factor *= _clamp(1.0 - ((tov_pct - 0.13) / 5.0), 0.98, 1.02)
+    if team_pace:
+        feature_factor *= _clamp(1.0 + ((team_pace - 100.0) / 1000.0), 0.98, 1.04)
 
     stat_bias = 1.0
     if stat_type in {"assists", "pa", "pra"}:
-        stat_bias = _clamp(1.0 + ((usage - 22.0) / 250.0), 0.97, 1.04) if usage else 1.0
+        stat_bias = _clamp(1.0 + ((usage - 22.0) / 220.0), 0.96, 1.05) if usage else 1.0
 
-    return _clamp(trend_factor * usage_factor * matchup_volume_factor * boxscore_factor * stat_bias, 0.88, 1.12)
+    return _clamp(trend_factor * usage_factor * matchup_volume_factor * feature_factor * stat_bias, 0.85, 1.15)
 
 
 def _teammate_context_factor(

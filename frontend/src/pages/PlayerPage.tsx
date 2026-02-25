@@ -27,7 +27,7 @@ export default function PlayerPage() {
       try {
         const { data } = await apiClient.get(`/players/${playerId}/projection`, {
           params: { stat_type: selectedStat },
-          timeout: 180000,
+          timeout: 300000,
         })
         return data
       } catch (error) {
@@ -76,7 +76,7 @@ export default function PlayerPage() {
             stat_type: selectedStat,
             line: playerOdds.line
           },
-          timeout: 180000, // 3 minute timeout
+          timeout: 300000, // 5 minute timeout
         })
         console.log('Monte Carlo Response:', data)
         console.log('Monte Carlo expected_value:', data.expected_value)

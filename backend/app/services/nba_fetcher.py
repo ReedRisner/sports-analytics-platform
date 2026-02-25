@@ -105,7 +105,7 @@ def safe_int(val, default=0):
     except (ValueError, TypeError):
         return default
 
-def nba_get(url, params, timeout=160):
+def nba_get(url, params, timeout=300):
     resp = SESSION.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
@@ -241,7 +241,7 @@ def fetch_enhanced_projection_signals(
             "MeasureType": "Base",
             "LeagueID": "00",
         })
-        payload["league_profile"] = parse_first_row(data, 0)
+        payload["league_profile"] = parse_player_row(data, player_id, 0)
     except Exception:
         pass
 
@@ -253,7 +253,7 @@ def fetch_enhanced_projection_signals(
             "PerMode": "PerGame",
             "MeasureType": "Base",
         })
-        payload["team_on_off"] = parse_first_row(data, 0)
+        payload["team_on_off"] = parse_player_row(data, player_id, 0)
     except Exception:
         pass
 
@@ -431,7 +431,7 @@ def get_team_stats_df(season, measure_type, per_mode="PerGame"):
     )
 
     # ✅ use longer timeout + your browser-like headers so NBA stats doesn't throttle as much
-    extra = dict(timeout=160, headers=SESSION.headers)
+    extra = dict(timeout=300, headers=SESSION.headers)
 
     try:
         df = leaguedashteamstats.LeagueDashTeamStats(**kwargs, **extra).get_data_frames()[0]
