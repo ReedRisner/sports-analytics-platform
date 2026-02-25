@@ -7,7 +7,7 @@ from alembic import context
 
 # Import your Base and models (ensures metadata includes all tables)
 from app.database import Base
-from app.models.player import Team, Player, Game, PlayerGameStats, OddsLine
+from app.models.player import Team, Player, Game, PlayerGameStats, OddsLine, EndpointSnapshot
 from app.models.projections import ProjectionHistory, ProjectionResult
 
 # this is the Alembic Config object

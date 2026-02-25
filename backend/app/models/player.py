@@ -1,5 +1,5 @@
 # backend/app/models/player.py
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Date, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Date, DateTime, UniqueConstraint, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -169,6 +169,36 @@ class PlayerGameStats(Base):
     fantasy_points = Column(Float)
 
     player = relationship("Player", back_populates="stats")
+
+
+class EndpointSnapshot(Base):
+    """
+    Persisted raw endpoint payloads for player/game context features.
+    Stores one row per endpoint + player + game/season snapshot.
+    """
+    __tablename__ = "endpoint_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    endpoint = Column(String(100), nullable=False, index=True)
+    season = Column(String(10), nullable=False, index=True)
+
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    opp_team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    game_id = Column(Integer, ForeignKey("games.id"), nullable=True, index=True)
+
+    snapshot_date = Column(Date, nullable=True, index=True)
+    payload = Column(JSON, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "endpoint", "player_id", "game_id", "season", "snapshot_date",
+            name="uq_endpoint_snapshots_endpoint_player_game_season_date",
+        ),
+    )
 
 
 class OddsLine(Base):
