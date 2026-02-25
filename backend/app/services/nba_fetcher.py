@@ -1,5 +1,6 @@
 # backend/app/services/nba_fetcher.py
 import time
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 from nba_api.stats.static import teams as nba_teams_static
@@ -21,6 +22,32 @@ GAMELOGS_ADVANCED_URL = "https://stats.nba.com/stats/playergamelogs"
 TEAMGAMELOGS_URL      = "https://stats.nba.com/stats/teamgamelogs"
 ROSTER_URL            = "https://stats.nba.com/stats/commonteamroster"
 STANDINGS_URL         = "https://stats.nba.com/stats/leaguestandingsv3"
+PLAYER_SPLITS_URL     = "https://stats.nba.com/stats/playerdashboardbygeneralsplits"
+PLAYER_LASTNGAMES_URL = "https://stats.nba.com/stats/playerdashboardbylastngames"
+LEAGUE_PLAYER_URL     = "https://stats.nba.com/stats/leaguedashplayerstats"
+TEAM_ONOFF_URL        = "https://stats.nba.com/stats/teamplayeronoffsummary"
+MATCHUPS_URL          = "https://stats.nba.com/stats/leagueseasonmatchups"
+BOX_ADVANCED_V2_URL    = "https://stats.nba.com/stats/boxscoreadvancedv2"
+BOX_ADVANCED_V3_URL    = "https://stats.nba.com/stats/boxscoreadvancedv3"
+BOX_DEFENSIVE_V2_URL   = "https://stats.nba.com/stats/boxscoredefensivev2"
+BOX_FOURFACTORS_V2_URL = "https://stats.nba.com/stats/boxscorefourfactorsv2"
+BOX_FOURFACTORS_V3_URL = "https://stats.nba.com/stats/boxscorefourfactorsv3"
+BOX_HUSTLE_V2_URL      = "https://stats.nba.com/stats/boxscorehustlev2"
+BOX_MISC_V2_URL        = "https://stats.nba.com/stats/boxscoremiscv2"
+BOX_MISC_V3_URL        = "https://stats.nba.com/stats/boxscoremiscv3"
+BOX_PLAYERTRACK_V3_URL = "https://stats.nba.com/stats/boxscoreplayertrackv3"
+BOX_SCORING_V2_URL     = "https://stats.nba.com/stats/boxscorescoringv2"
+BOX_SCORING_V3_URL     = "https://stats.nba.com/stats/boxscorescoringv3"
+BOX_SUMMARY_V2_URL     = "https://stats.nba.com/stats/boxscoresummaryv2"
+BOX_SUMMARY_V3_URL     = "https://stats.nba.com/stats/boxscoresummaryv3"
+BOX_TRADITIONAL_V2_URL = "https://stats.nba.com/stats/boxscoretraditionalv2"
+BOX_TRADITIONAL_V3_URL = "https://stats.nba.com/stats/boxscoretraditionalv3"
+BOX_USAGE_V2_URL       = "https://stats.nba.com/stats/boxscoreusagev2"
+BOX_USAGE_V3_URL       = "https://stats.nba.com/stats/boxscoreusagev3"
+PLAYER_ESTIMATED_METRICS_URL = "https://stats.nba.com/stats/playerestimatedmetrics"
+TEAM_ESTIMATED_METRICS_URL   = "https://stats.nba.com/stats/teamestimatedmetrics"
+PLAYER_SHOTLOC_URL           = "https://stats.nba.com/stats/leaguedashplayershotlocations"
+PLAYER_CLUTCH_URL            = "https://stats.nba.com/stats/leaguedashplayerclutch"
 FALLBACK              = "2024-25"
 
 # ── Position bucketing ────────────────────────────────────────────────────────
@@ -60,6 +87,11 @@ STAT_DF_COLS = {
 }
 
 
+_ENHANCED_SIGNAL_CACHE: dict[str, dict] = {}
+_ENHANCED_SIGNAL_EXPIRY: dict[str, datetime] = {}
+_ENHANCED_SIGNAL_TTL_MINUTES = 20
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def safe_float(val, default=0.0):
     try:
@@ -73,7 +105,7 @@ def safe_int(val, default=0):
     except (ValueError, TypeError):
         return default
 
-def nba_get(url, params, timeout=160):
+def nba_get(url, params, timeout=300):
     resp = SESSION.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
@@ -81,6 +113,291 @@ def nba_get(url, params, timeout=160):
 def parse_rs(data, index=0):
     rs = data['resultSets'][index]
     return rs['headers'], rs['rowSet']
+
+
+def parse_first_row(data, index=0):
+    """Return dict for first row in a resultSet, or {} when unavailable."""
+    headers, rows = parse_rs(data, index=index)
+    if not rows:
+        return {}
+    row = rows[0]
+    return {h: row[i] if i < len(row) else None for i, h in enumerate(headers)}
+
+
+
+
+def parse_player_row(data, player_id: int, index=0):
+    """Return dict for a specific player row from resultSet, or {}."""
+    headers, rows = parse_rs(data, index=index)
+    if not rows:
+        return {}
+
+    pid_idx = None
+    for candidate in ("PLAYER_ID", "playerId", "PERSON_ID", "personId"):
+        if candidate in headers:
+            pid_idx = headers.index(candidate)
+            break
+
+    if pid_idx is not None:
+        for row in rows:
+            try:
+                if int(row[pid_idx]) == int(player_id):
+                    return {h: row[i] if i < len(row) else None for i, h in enumerate(headers)}
+            except (TypeError, ValueError):
+                continue
+
+    # Fallback: return first row when endpoint has no player-level rows.
+    row = rows[0]
+    return {h: row[i] if i < len(row) else None for i, h in enumerate(headers)}
+
+
+def _enhanced_cache_key(player_id: int, opp_team_id: int, season: str, game_id: int | None):
+    return f"{season}:{player_id}:{opp_team_id}:{game_id or 0}"
+
+
+def _get_cached_enhanced_signals(cache_key: str):
+    expires = _ENHANCED_SIGNAL_EXPIRY.get(cache_key)
+    if not expires or datetime.now() >= expires:
+        _ENHANCED_SIGNAL_CACHE.pop(cache_key, None)
+        _ENHANCED_SIGNAL_EXPIRY.pop(cache_key, None)
+        return None
+    return _ENHANCED_SIGNAL_CACHE.get(cache_key)
+
+
+def _set_cached_enhanced_signals(cache_key: str, payload: dict):
+    _ENHANCED_SIGNAL_CACHE[cache_key] = payload
+    _ENHANCED_SIGNAL_EXPIRY[cache_key] = datetime.now() + timedelta(minutes=_ENHANCED_SIGNAL_TTL_MINUTES)
+
+
+def fetch_enhanced_projection_signals(
+    player_id: int,
+    team_id: int,
+    opp_team_id: int,
+    season: str = "2025-26",
+    game_id: int | None = None,
+) -> dict:
+    """
+    Best-effort multi-endpoint pull used by projection_engine.
+
+    Pulls additional context from several nba_api-backed stats.nba.com endpoints.
+    The function is intentionally tolerant of partial endpoint failures.
+    """
+    cache_key = _enhanced_cache_key(player_id=player_id, opp_team_id=opp_team_id, season=season, game_id=game_id)
+    cached = _get_cached_enhanced_signals(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = {
+        "player_splits": {},
+        "last_n": {},
+        "league_profile": {},
+        "team_on_off": {},
+        "matchups": {},
+        "boxscore_advanced": {},
+        "player_estimated": {},
+        "team_estimated": {},
+        "player_shot_profile": {},
+        "player_clutch": {},
+    }
+
+    try:
+        data = nba_get(PLAYER_SPLITS_URL, {
+            "PlayerID": player_id,
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "MeasureType": "Base",
+            "PerMode": "PerGame",
+            "PlusMinus": "N",
+            "PaceAdjust": "N",
+            "Rank": "N",
+            "LeagueID": "00",
+        })
+        payload["player_splits"] = parse_first_row(data, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(PLAYER_LASTNGAMES_URL, {
+            "PlayerID": player_id,
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "MeasureType": "Base",
+            "PerMode": "PerGame",
+            "PlusMinus": "N",
+            "PaceAdjust": "N",
+            "Rank": "N",
+            "LeagueID": "00",
+        })
+        payload["last_n"] = parse_first_row(data, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(LEAGUE_PLAYER_URL, {
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "PlayerID": player_id,
+            "PerMode": "PerGame",
+            "MeasureType": "Base",
+            "LeagueID": "00",
+        })
+        payload["league_profile"] = parse_player_row(data, player_id, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(TEAM_ONOFF_URL, {
+            "TeamID": team_id,
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "PerMode": "PerGame",
+            "MeasureType": "Base",
+        })
+        payload["team_on_off"] = parse_player_row(data, player_id, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(PLAYER_ESTIMATED_METRICS_URL, {
+            "LeagueID": "00",
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "PerMode": "PerGame",
+        })
+        payload["player_estimated"] = parse_player_row(data, player_id, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(TEAM_ESTIMATED_METRICS_URL, {
+            "LeagueID": "00",
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "PerMode": "PerGame",
+        })
+        # Keep team row for player team and opponent team when present.
+        headers, rows = parse_rs(data, 0)
+        team_id_idx = headers.index("TEAM_ID") if "TEAM_ID" in headers else None
+        if team_id_idx is not None:
+            for row in rows:
+                try:
+                    tid = int(row[team_id_idx])
+                except (TypeError, ValueError):
+                    continue
+                row_dict = {h: row[i] if i < len(row) else None for i, h in enumerate(headers)}
+                if tid == team_id:
+                    payload["team_estimated"]["player_team"] = row_dict
+                elif tid == opp_team_id:
+                    payload["team_estimated"]["opp_team"] = row_dict
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(PLAYER_SHOTLOC_URL, {
+            "LeagueID": "00",
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "PerMode": "PerGame",
+            "DistanceRange": "By Zone",
+        })
+        payload["player_shot_profile"] = parse_player_row(data, player_id, 0)
+    except Exception:
+        pass
+
+    try:
+        data = nba_get(PLAYER_CLUTCH_URL, {
+            "LeagueID": "00",
+            "Season": season,
+            "SeasonType": "Regular Season",
+            "ClutchTime": "Last 5 Minutes",
+            "AheadBehind": "Ahead or Behind",
+            "PointDiff": 5,
+            "MeasureType": "Base",
+            "PerMode": "PerGame",
+        })
+        payload["player_clutch"] = parse_player_row(data, player_id, 0)
+    except Exception:
+        pass
+
+    if game_id:
+        boxscore_endpoints = {
+            "boxscoreadvancedv2": (BOX_ADVANCED_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscoreadvancedv3": (BOX_ADVANCED_V3_URL, {"GameID": str(game_id)}),
+            "boxscoredefensivev2": (BOX_DEFENSIVE_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscorefourfactorsv2": (BOX_FOURFACTORS_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscorefourfactorsv3": (BOX_FOURFACTORS_V3_URL, {"GameID": str(game_id)}),
+            "boxscorehustlev2": (BOX_HUSTLE_V2_URL, {"GameID": str(game_id)}),
+            "boxscoremiscv2": (BOX_MISC_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscoremiscv3": (BOX_MISC_V3_URL, {"GameID": str(game_id)}),
+            "boxscoreplayertrackv3": (BOX_PLAYERTRACK_V3_URL, {"GameID": str(game_id)}),
+            "boxscorescoringv2": (BOX_SCORING_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscorescoringv3": (BOX_SCORING_V3_URL, {"GameID": str(game_id)}),
+            "boxscoresummaryv2": (BOX_SUMMARY_V2_URL, {"GameID": str(game_id)}),
+            "boxscoresummaryv3": (BOX_SUMMARY_V3_URL, {"GameID": str(game_id)}),
+            "boxscoretraditionalv2": (BOX_TRADITIONAL_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscoretraditionalv3": (BOX_TRADITIONAL_V3_URL, {"GameID": str(game_id)}),
+            "boxscoreusagev2": (BOX_USAGE_V2_URL, {
+                "GameID": str(game_id),
+                "StartPeriod": 0,
+                "EndPeriod": 10,
+                "StartRange": 0,
+                "EndRange": 28800,
+                "RangeType": 0,
+            }),
+            "boxscoreusagev3": (BOX_USAGE_V3_URL, {"GameID": str(game_id)}),
+        }
+
+        for key, (url, params) in boxscore_endpoints.items():
+            try:
+                data = nba_get(url, params)
+                payload["boxscore_advanced"][key] = parse_player_row(data, player_id, 0)
+            except Exception:
+                payload["boxscore_advanced"][key] = {}
+
+    _set_cached_enhanced_signals(cache_key, payload)
+    return payload
 
 def rval(headers, row, col, default=0):
     try:
@@ -114,7 +431,7 @@ def get_team_stats_df(season, measure_type, per_mode="PerGame"):
     )
 
     # ✅ use longer timeout + your browser-like headers so NBA stats doesn't throttle as much
-    extra = dict(timeout=160, headers=SESSION.headers)
+    extra = dict(timeout=300, headers=SESSION.headers)
 
     try:
         df = leaguedashteamstats.LeagueDashTeamStats(**kwargs, **extra).get_data_frames()[0]
