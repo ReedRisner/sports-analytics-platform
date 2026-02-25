@@ -29,6 +29,82 @@ def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _market_lean(proj) -> Optional[str]:
+    if proj.recommendation in {"OVER", "UNDER"}:
+        return proj.recommendation
+    if proj.line is not None:
+        if proj.projected > proj.line:
+            return "OVER"
+        if proj.projected < proj.line:
+            return "UNDER"
+    return None
+
+
+def _build_projection_summary(proj, stat_type: str, actual_mpg: Optional[float], projected_minutes: Optional[float], team_injuries: list[dict]) -> str:
+    """Build a natural-language summary for why a player line is projected the way it is."""
+    stat_label = {
+        "points": "points",
+        "rebounds": "rebounds",
+        "assists": "assists",
+        "steals": "steals",
+        "blocks": "blocks",
+        "pra": "PRA",
+        "pr": "PR",
+        "pa": "PA",
+        "ra": "RA",
+        "three_pointers_made": "3PM",
+    }.get(stat_type, stat_type)
+
+    reasons = [
+        f"Projection has {proj.player_name} at {proj.projected:.1f} {stat_label}.",
+        f"Form check: {proj.l5_avg:.1f} in the last 5 and {proj.l10_avg:.1f} in the last 10 compared to a {proj.season_avg:.1f} season average.",
+    ]
+
+    if projected_minutes is not None and actual_mpg is not None:
+        minute_delta = projected_minutes - actual_mpg
+        if abs(minute_delta) < 0.5:
+            minute_context = "roughly in line"
+        elif minute_delta > 0:
+            minute_context = "slightly up"
+        else:
+            minute_context = "slightly down"
+        reasons.append(
+            f"Expected minutes are {minute_context} ({projected_minutes:.1f} projected vs {actual_mpg:.1f} recent MPG)."
+        )
+
+    if proj.matchup:
+        matchup = proj.matchup
+        matchup_sentence = (
+            f"Matchup vs {matchup.opp_name} is graded {matchup.matchup_grade}, with pace factor {matchup.pace_factor:.2f}x and matchup factor {matchup.matchup_factor:.2f}x."
+        )
+        if matchup.def_rank:
+            matchup_sentence += f" That's the {_ordinal(matchup.def_rank)}-easiest spot for this position by our defensive ranking."
+        reasons.append(matchup_sentence)
+
+    lean = _market_lean(proj)
+    if lean and proj.line is not None:
+        edge_text = f" ({proj.edge_pct:+.1f}% edge)" if proj.edge_pct is not None else ""
+        reasons.append(
+            f"Bot lean: {lean} {proj.line:.1f}{edge_text}."
+        )
+
+    if team_injuries:
+        impacted = ", ".join([inj.get("player_name", "teammate") for inj in team_injuries[:2]])
+        reasons.append(
+            f"Injury context matters too: missing pieces like {impacted} can shift usage and touch volume."
+        )
+
+    return " ".join(reasons)
+
+
 def _projection_to_dict(proj) -> dict:
     if proj is None:
         return {}
@@ -295,6 +371,13 @@ def player_projection(
             "projected_minutes": projected_minutes,
             "actual_mpg": actual_mpg,
         },
+        "projection_summary": _build_projection_summary(
+            proj,
+            stat_type,
+            actual_mpg,
+            projected_minutes,
+            team_injuries,
+        ),
         **_projection_to_dict(proj),
     }
 
