@@ -29,6 +29,53 @@ def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _build_projection_summary(proj, stat_type: str, actual_mpg: Optional[float], projected_minutes: Optional[float], team_injuries: list[dict]) -> str:
+    """Build a short natural-language summary for why a line is projected the way it is."""
+    stat_label = {
+        "points": "points",
+        "rebounds": "rebounds",
+        "assists": "assists",
+        "steals": "steals",
+        "blocks": "blocks",
+        "pra": "PRA",
+        "pr": "PR",
+        "pa": "PA",
+        "ra": "RA",
+        "three_pointers_made": "3PM",
+    }.get(stat_type, stat_type)
+
+    reasons = [
+        f"Model projects {proj.player_name} for {proj.projected:.1f} {stat_label}.",
+        f"Recent form is {proj.l5_avg:.1f} over last 5 and {proj.l10_avg:.1f} over last 10 games versus a {proj.season_avg:.1f} season baseline.",
+    ]
+
+    if projected_minutes is not None and actual_mpg is not None:
+        minute_delta = projected_minutes - actual_mpg
+        direction = "up" if minute_delta >= 0 else "down"
+        reasons.append(
+            f"Minutes are trending {direction} ({projected_minutes:.1f} projected vs {actual_mpg:.1f} recent MPG), which shifts volume expectations."
+        )
+
+    if proj.matchup:
+        matchup = proj.matchup
+        reasons.append(
+            f"Matchup vs {matchup.opp_name} grades {matchup.matchup_grade} with pace factor {matchup.pace_factor:.2f}x and matchup factor {matchup.matchup_factor:.2f}x."
+        )
+        if matchup.def_rank:
+            reasons.append(f"Opponent defensive rank context: #{matchup.def_rank} against this profile.")
+
+    if proj.recommendation and proj.edge_pct is not None:
+        reasons.append(
+            f"Compared to the market line, current edge is {proj.edge_pct:+.1f}% ({proj.recommendation})."
+        )
+
+    if team_injuries:
+        impacted = ", ".join([inj.get("player_name", "teammate") for inj in team_injuries[:2]])
+        reasons.append(f"Team availability also matters; absences like {impacted} can redistribute usage and minutes.")
+
+    return " ".join(reasons)
+
+
 def _projection_to_dict(proj) -> dict:
     if proj is None:
         return {}
@@ -295,6 +342,13 @@ def player_projection(
             "projected_minutes": projected_minutes,
             "actual_mpg": actual_mpg,
         },
+        "projection_summary": _build_projection_summary(
+            proj,
+            stat_type,
+            actual_mpg,
+            projected_minutes,
+            team_injuries,
+        ),
         **_projection_to_dict(proj),
     }
 

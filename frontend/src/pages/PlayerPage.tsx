@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/api/client'
 import { STAT_TYPES } from '@/lib/constants'
-import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap, AlertTriangle, Clock3 } from 'lucide-react'
+import { ArrowLeft, TrendingUp, Activity, BarChart3, Zap, AlertTriangle, Clock3, Bot } from 'lucide-react'
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { STAT_EXPLANATIONS } from '@/lib/stat-explanations'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts'
@@ -202,6 +202,16 @@ export default function PlayerPage() {
           </button>
         ))}
       </div>
+
+      {projection.projection_summary && (
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <Bot className="w-5 h-5 text-primary" />
+            <h2 className="text-lg font-semibold">AI Projection Summary</h2>
+          </div>
+          <p className="text-sm text-muted-foreground leading-6">{projection.projection_summary}</p>
+        </div>
+      )}
 
       {/* Main Stats Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
