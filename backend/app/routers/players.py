@@ -160,8 +160,6 @@ def _projection_to_dict(proj) -> dict:
             "injury_factor":   proj.injury_factor,
             "form_factor":     proj.form_factor,
             "opp_strength":    proj.opp_strength,
-            "api_context_factor": proj.api_context_factor,
-            "teammate_context_factor": proj.teammate_context_factor,
             "is_back_to_back": proj.is_back_to_back,
         },
     }
@@ -295,7 +293,6 @@ def player_projection(
     stat_type:   str           = Query("points"),
     opp_team_id: Optional[int] = Query(None),
     line:        Optional[float] = Query(None),
-    teammate_ids_out: Optional[list[int]] = Query(None),
     db: Session = Depends(get_db),
 ):
     """
@@ -309,14 +306,7 @@ def player_projection(
             detail=f"Invalid stat_type. Choose from: {list(STAT_CONFIG.keys())}"
         )
 
-    proj = project_player(
-        db,
-        player_id,
-        stat_type,
-        opp_team_id,
-        line,
-        teammate_ids_out=teammate_ids_out,
-    )
+    proj = project_player(db, player_id, stat_type, opp_team_id, line)
     if not proj:
         raise HTTPException(status_code=404, detail="Player not found or no stats available")
 
@@ -535,180 +525,6 @@ def get_player_game_log(
         })
     
     return result
-
-
-@router.get("/{player_id}/box-score-splits")
-def get_player_box_score_splits(
-    player_id: int,
-    split: str = Query("l5", pattern="^(l5|l10|vs_opp|season)$"),
-    opp_team_id: Optional[int] = Query(None),
-    teammate_mode: Optional[str] = Query(None, pattern="^(in|out)$"),
-    teammate_ids: Optional[list[int]] = Query(None),
-    db: Session = Depends(get_db),
-):
-    player = db.query(Player).filter(Player.id == player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    q = (
-        db.query(PlayerGameStats, Game)
-        .join(Game, PlayerGameStats.game_id == Game.id)
-        .filter(PlayerGameStats.player_id == player_id)
-        .order_by(desc(Game.date))
-    )
-
-    rows = q.all()
-    if split == "l5":
-        rows = rows[:5]
-    elif split == "l10":
-        rows = rows[:10]
-    elif split == "vs_opp":
-        if not opp_team_id:
-            raise HTTPException(status_code=400, detail="opp_team_id is required for vs_opp split")
-        rows = [
-            (s, g) for s, g in rows
-            if (g.home_team_id == opp_team_id or g.away_team_id == opp_team_id)
-        ][:10]
-
-    if teammate_ids and teammate_mode:
-        teammate_rows = (
-            db.query(PlayerGameStats.player_id, PlayerGameStats.game_id, PlayerGameStats.minutes)
-            .filter(
-                PlayerGameStats.player_id.in_(teammate_ids),
-                PlayerGameStats.game_id.in_([g.id for _, g in rows]),
-            )
-            .all()
-        )
-        presence = {(pid, gid): (mins or 0.0) for pid, gid, mins in teammate_rows}
-
-        filtered = []
-        for stat, game in rows:
-            all_out = all(presence.get((tid, game.id), 0.0) < 1.0 for tid in teammate_ids)
-            keep = all_out if teammate_mode == "out" else (not all_out)
-            if keep:
-                filtered.append((stat, game))
-        rows = filtered
-
-    output = []
-    for stat, game in rows:
-        is_home = game.home_team_id == player.team_id
-        opp_id = game.away_team_id if is_home else game.home_team_id
-        opp = db.query(Team).filter(Team.id == opp_id).first()
-        output.append({
-            "date": str(game.date),
-            "opponent": opp.abbreviation if opp else "?",
-            "home_away": "vs" if is_home else "@",
-            "minutes": _safe(stat.minutes),
-            "points": stat.points,
-            "rebounds": stat.rebounds,
-            "assists": stat.assists,
-            "steals": stat.steals,
-            "blocks": stat.blocks,
-            "threes": stat.fg3m,
-            "turnovers": stat.turnovers,
-            "pra": stat.pra,
-            "fantasy_points": _safe(stat.fantasy_points),
-            "usage_rate": round(_safe(stat.usage_rate) * 100, 1) if stat.usage_rate is not None else None,
-        })
-
-    def avg_of(key: str):
-        vals = [float(r[key]) for r in output if r.get(key) is not None]
-        return round(sum(vals) / len(vals), 2) if vals else None
-
-    return {
-        "split": split,
-        "filters": {
-            "opp_team_id": opp_team_id,
-            "teammate_mode": teammate_mode,
-            "teammate_ids": teammate_ids or [],
-        },
-        "rows": output,
-        "averages": {
-            "points": avg_of("points"),
-            "rebounds": avg_of("rebounds"),
-            "assists": avg_of("assists"),
-            "threes": avg_of("threes"),
-            "pra": avg_of("pra"),
-            "fantasy_points": avg_of("fantasy_points"),
-        },
-    }
-
-
-@router.get("/{player_id}/similar-vs-team")
-def get_similar_players_vs_team(
-    player_id: int,
-    opp_team_id: int = Query(...),
-    stat_type: str = Query("points"),
-    limit: int = Query(8, ge=3, le=20),
-    db: Session = Depends(get_db),
-):
-    player = db.query(Player).filter(Player.id == player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    stat_col = {
-        "points": "points",
-        "rebounds": "rebounds",
-        "assists": "assists",
-        "pra": "pra",
-        "threes": "fg3m",
-    }.get(stat_type, "points")
-
-    base_vals = get_player_stat_lines(db, player_id, stat_col, limit=25)
-    if len(base_vals) < 5:
-        return {"players": []}
-    baseline = _avg(base_vals)
-
-    candidates = (
-        db.query(Player)
-        .filter(
-            Player.team_id != player.team_id,
-            Player.position == player.position,
-            Player.is_active.is_(True),
-        )
-        .limit(120)
-        .all()
-    )
-
-    similar = []
-    for cand in candidates:
-        vals = get_player_stat_lines(db, cand.id, stat_col, limit=25)
-        if len(vals) < 5:
-            continue
-        cand_avg = _avg(vals)
-        if baseline <= 0:
-            continue
-        similarity_gap = abs(cand_avg - baseline) / baseline
-        if similarity_gap > 0.25:
-            continue
-
-        vs_opp_rows = (
-            db.query(PlayerGameStats, Game)
-            .join(Game, PlayerGameStats.game_id == Game.id)
-            .filter(
-                PlayerGameStats.player_id == cand.id,
-                (Game.home_team_id == opp_team_id) | (Game.away_team_id == opp_team_id),
-            )
-            .order_by(desc(Game.date))
-            .limit(10)
-            .all()
-        )
-        if len(vs_opp_rows) < 2:
-            continue
-
-        stat_vals = [float(getattr(stat, stat_col) or 0) for stat, _ in vs_opp_rows]
-        similar.append({
-            "player_id": cand.id,
-            "player_name": cand.name,
-            "team_id": cand.team_id,
-            "season_avg": round(cand_avg, 2),
-            "vs_opp_avg": round(_avg(stat_vals), 2),
-            "games_vs_opp": len(stat_vals),
-            "similarity_score": round(max(0.0, 1.0 - similarity_gap), 3),
-        })
-
-    similar.sort(key=lambda item: (item["similarity_score"], item["games_vs_opp"]), reverse=True)
-    return {"players": similar[:limit]}
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _game_result(game: Game, team_id: int) -> str:
     if game.home_score is None or game.away_score is None:
