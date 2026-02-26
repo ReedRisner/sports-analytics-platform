@@ -14,6 +14,8 @@ export const oddsAPI = {
     minEdgePct: number = 3.0,
     position?: string
   ): Promise<Edge[]> => {
+    const requestTimeoutMs = sportsbook === 'prizepicks' ? 360000 : 180000
+
     const { data } = await apiClient.get('/odds/edge-finder', {
       params: {
         stat_type: statType,
@@ -21,7 +23,7 @@ export const oddsAPI = {
         min_edge_pct: minEdgePct,
         position,
       },
-      timeout: 180000, // 3 minute timeout for edge finder
+      timeout: requestTimeoutMs,
     })
     // Backend returns { edges: [...] }, extract the array
     return Array.isArray(data) ? data : data.edges || []
